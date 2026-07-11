@@ -7,11 +7,16 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const SIGNS = ['Ariete','Toro','Gemelli','Cancro','Leone','Vergine','Bilancia','Scorpione','Sagittario','Capricorno','Acquario','Pesci'];
 
+const ZODIAC_SYMBOLS = {
+  Ariete: '♈', Toro: '♉', Gemelli: '♊', Cancro: '♋', Leone: '♌', Vergine: '♍',
+  Bilancia: '♎', Scorpione: '♏', Sagittario: '♐', Capricorno: '♑', Acquario: '♒', Pesci: '♓'
+};
+
 const EXAMPLE_TEXT = "Ho litigato con la mia ragazza Leone perché dice che la controllo troppo. Vorrei scriverle ma non so come farlo senza peggiorare la situazione.";
 
 const SEED_PEOPLE = [
   {
-    id: 'marco', name: 'Marco', sign: 'Ariete', relation: 'Amico',
+    id: 'marco', name: 'Marco', sign: 'Ariete', ascendant: 'Leone', gender: 'uomo', relation: 'Amico',
     status: "Stabile, ma comunicazione un po' rada nelle ultime settimane.",
     dna: { autonomia: 78, fiducia: 70, pressione: 30, dialogo: 64 },
     timeline: [
@@ -21,7 +26,7 @@ const SEED_PEOPLE = [
     ]
   },
   {
-    id: 'laura', name: 'Laura', sign: 'Leone', relation: 'Partner',
+    id: 'laura', name: 'Laura', sign: 'Leone', ascendant: 'Vergine', gender: 'donna', relation: 'Partner',
     status: 'Tensione recente legata al bisogno di autonomia percepito come controllo.',
     dna: { autonomia: 35, fiducia: 58, pressione: 74, dialogo: 47 },
     timeline: [
@@ -31,7 +36,7 @@ const SEED_PEOPLE = [
     ]
   },
   {
-    id: 'papa', name: 'Papà', sign: 'Toro', relation: 'Familiare',
+    id: 'papa', name: 'Papà', sign: 'Toro', ascendant: 'Capricorno', gender: 'uomo', relation: 'Familiare',
     status: 'Rapporto solido, dialogo diretto ma a volte poco esplicito sulle emozioni.',
     dna: { autonomia: 60, fiducia: 85, pressione: 20, dialogo: 55 },
     timeline: [
@@ -196,9 +201,12 @@ function BottomNav({ active, onNavigate }) {
 export default function AuraApp() {
   const [screen, setScreen] = useState('home'); // home, analysis, people, personDetail, messages, chat, coach
   const [homeInput, setHomeInput] = useState('');
+  const [homeKnownSign, setHomeKnownSign] = useState('');
   const [analysis, setAnalysis] = useState(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [people, setPeople] = useState(SEED_PEOPLE);
+  const [genderFilter, setGenderFilter] = useState([]); // array di stringhe selezionate
+  const [signFilter, setSignFilter] = useState([]);
   const [currentPersonId, setCurrentPersonId] = useState(null);
   const [toast, setToast] = useState('');
   const toastTimer = useRef(null);
@@ -230,7 +238,7 @@ export default function AuraApp() {
     setAnalysisLoading(true);
     setScreen('analysis');
     try {
-      const result = await callBackend('/api/analyze-situation', { text });
+      const result = await callBackend('/api/analyze-situation', { text, knownSign: homeKnownSign || undefined });
       setAnalysis(result);
     } catch (e) {
       setAnalysis(mockSituationAnalysis(text));
@@ -264,7 +272,7 @@ export default function AuraApp() {
     const sign = (analysis && analysis.detectedSign) || 'Bilancia';
     const name = 'Persona da situazione ' + (people.length + 1);
     const newPerson = {
-      id: 'p_' + Date.now(), name, sign, relation: 'Da definire',
+      id: 'p_' + Date.now(), name, sign, ascendant: '', gender: 'altro', relation: 'Da definire',
       status: 'Situazione recente in corso di gestione.',
       dna: { autonomia:50, fiducia:50, pressione:50, dialogo:50 },
       timeline: [{ date:'Ora', text:'Analisi creata dalla situazione descritta.' }]
@@ -275,11 +283,26 @@ export default function AuraApp() {
 
   /* ---------- Persone ---------- */
   function openPerson(id) { setCurrentPersonId(id); setScreen('personDetail'); }
+
+  function toggleGenderFilter(g) {
+    setGenderFilter(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
+  }
+  function toggleSignFilter(s) {
+    setSignFilter(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
+  }
+  const filteredPeople = people.filter(p => {
+    const genderOk = genderFilter.length === 0 || genderFilter.includes(p.gender);
+    const signOk = signFilter.length === 0 || signFilter.includes(p.sign);
+    return genderOk && signOk;
+  });
+
   function quickAddPerson() {
     const sign = SIGNS[Math.floor(Math.random()*SIGNS.length)];
+    const ascendant = SIGNS[Math.floor(Math.random()*SIGNS.length)];
+    const gender = ['uomo','donna','altro'][Math.floor(Math.random()*3)];
     const name = 'Nuova persona ' + (people.length + 1);
     const newPerson = {
-      id:'p_'+Date.now(), name, sign, relation:'Da definire',
+      id:'p_'+Date.now(), name, sign, ascendant, gender, relation:'Da definire',
       status:'Nessuna informazione ancora raccolta su questa relazione.',
       dna:{ autonomia:50, fiducia:50, pressione:50, dialogo:50 },
       timeline:[{ date:'Ora', text:'Persona creata manualmente dalla lista Persone.' }]
@@ -291,6 +314,7 @@ export default function AuraApp() {
     const p = people.find(x => x.id === currentPersonId);
     if (!p) return;
     setHomeInput(`Vorrei capire come comunicare meglio con ${p.name} (${p.sign}) riguardo alla situazione attuale: ${p.status}`);
+    setHomeKnownSign(p.sign);
     setScreen('home');
     showToast(`Pronto per una nuova analisi su ${p.name}`);
   }
@@ -386,11 +410,12 @@ export default function AuraApp() {
           <>
             <div style={{ padding:'18px 20px 10px 20px' }}>
               <div style={{ fontSize:28, fontWeight:800, letterSpacing:'0.02em', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', WebkitBackgroundClip:'text', backgroundClip:'text', color:'transparent' }}>Aura</div>
-              <div style={{ color:'#a8a6b3', fontSize:13, marginBottom:18 }}>Dì la cosa giusta, nel momento giusto.</div>
+              <div style={{ color:'#a8a6b3', fontSize:13, marginBottom:14 }}>Dì la cosa giusta, nel momento giusto.</div>
+              <ZodiacRibbon />
             </div>
             <div style={contentStyle}>
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:10 }}>Cosa sta succedendo?</div>
-              <textarea rows={6} value={homeInput} onChange={e=>setHomeInput(e.target.value)} placeholder="Raccontami cosa sta succedendo…"
+              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:10, marginTop:6 }}>Cosa sta succedendo?</div>
+              <textarea rows={6} value={homeInput} onChange={e=>{ setHomeInput(e.target.value); setHomeKnownSign(''); }} placeholder="Raccontami cosa sta succedendo…"
                 style={{ width:'100%', background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, color:'#f2f1ee', padding:16, fontSize:15, lineHeight:1.45, fontFamily:'inherit', resize:'none' }}/>
               <div style={{ display:'flex', gap:10, marginTop:10 }}>
                 <Btn variant="secondary" onClick={()=>setHomeInput(EXAMPLE_TEXT)}>Esempio</Btn>
@@ -451,8 +476,31 @@ export default function AuraApp() {
           <>
             <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>Persone</h1></div>
             <div style={contentStyle}>
+              <div style={{ fontSize:11.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:8 }}>Genere</div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:16 }}>
+                {['uomo','donna','altro'].map(g => (
+                  <FilterChip key={g} label={g.charAt(0).toUpperCase()+g.slice(1)} active={genderFilter.includes(g)} onClick={()=>toggleGenderFilter(g)} />
+                ))}
+              </div>
+
+              <div style={{ fontSize:11.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:8 }}>Segno</div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:20 }}>
+                {SIGNS.map(s => (
+                  <FilterChip key={s} label={ZODIAC_SYMBOLS[s] + ' ' + s} active={signFilter.includes(s)} onClick={()=>toggleSignFilter(s)} />
+                ))}
+              </div>
+
+              {(genderFilter.length > 0 || signFilter.length > 0) && (
+                <div onClick={()=>{ setGenderFilter([]); setSignFilter([]); }} style={{ fontSize:12.5, color:'#8b7cf6', fontWeight:700, cursor:'pointer', marginBottom:16 }}>
+                  Cancella filtri
+                </div>
+              )}
+
               <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                {people.map(p => <PersonRow key={p.id} p={p} onClick={()=>openPerson(p.id)} />)}
+                {filteredPeople.length === 0 && (
+                  <div style={{ textAlign:'center', padding:'30px 20px', color:'#6b6976', fontSize:13.5 }}>Nessuna persona corrisponde ai filtri</div>
+                )}
+                {filteredPeople.map(p => <PersonRow key={p.id} p={p} onClick={()=>openPerson(p.id)} />)}
               </div>
               <div onClick={quickAddPerson} style={{ display:'flex', alignItems:'center', gap:10, justifyContent:'center', padding:14, border:'1px dashed rgba(255,255,255,0.08)', borderRadius:16, color:'#a8a6b3', fontSize:13.5, fontWeight:600, cursor:'pointer', marginTop:12 }}>
                 + Aggiungi persona
@@ -479,8 +527,13 @@ export default function AuraApp() {
                 <div style={{ display:'flex', gap:14, alignItems:'center', marginBottom:18 }}>
                   <div style={{ width:60, height:60, borderRadius:'50%', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:800, fontSize:22, color:'#0b0c10' }}>{p.name.charAt(0).toUpperCase()}</div>
                   <div>
-                    <div style={{ display:'inline-flex', background:'#1c1f2b', border:'1px solid rgba(212,175,106,0.3)', borderRadius:999, padding:'6px 12px', fontSize:12.5, fontWeight:600, color:'#d4af6a' }}>✦ {p.sign}</div>
-                    <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:6 }}>{p.relation}</div>
+                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                      <div style={{ display:'inline-flex', background:'#1c1f2b', border:'1px solid rgba(212,175,106,0.3)', borderRadius:999, padding:'6px 12px', fontSize:12.5, fontWeight:600, color:'#d4af6a' }}>{ZODIAC_SYMBOLS[p.sign] || '✦'} {p.sign}</div>
+                      {p.ascendant && (
+                        <div style={{ display:'inline-flex', background:'#1c1f2b', border:'1px solid rgba(139,124,246,0.3)', borderRadius:999, padding:'6px 12px', fontSize:12.5, fontWeight:600, color:'#c9bfff' }}>{ZODIAC_SYMBOLS[p.ascendant] || '✦'} Asc. {p.ascendant}</div>
+                      )}
+                    </div>
+                    <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:6 }}>{p.relation}{p.gender ? ' · ' + p.gender.charAt(0).toUpperCase()+p.gender.slice(1) : ''}</div>
                   </div>
                 </div>
                 <Card title="Stato relazione">{p.status}</Card>
@@ -587,7 +640,7 @@ export default function AuraApp() {
         {/* COACH */}
         {screen === 'coach' && (
           <>
-            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>Coach</h1></div>
+            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>✦ Coach</h1></div>
             <div style={contentStyle}>
               <Card title="Stato attuale" accent="violet">
                 <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
@@ -643,13 +696,39 @@ function TopBar({ title, onBack }) {
   );
 }
 
+function ZodiacRibbon() {
+  return (
+    <div style={{
+      display:'flex', gap:0, justifyContent:'space-between',
+      padding:'10px 2px', borderTop:'1px solid rgba(255,255,255,0.06)', borderBottom:'1px solid rgba(255,255,255,0.06)',
+      opacity:0.55
+    }}>
+      {SIGNS.map(s => (
+        <span key={s} title={s} style={{ fontSize:13, color:'#d4af6a', lineHeight:1 }}>{ZODIAC_SYMBOLS[s]}</span>
+      ))}
+    </div>
+  );
+}
+
+function FilterChip({ label, active, onClick }) {
+  return (
+    <div onClick={onClick} style={{
+      padding:'7px 13px', borderRadius:999, fontSize:12.5, fontWeight:600, cursor:'pointer',
+      background: active ? 'rgba(139,124,246,0.18)' : '#161821',
+      border: active ? '1px solid #8b7cf6' : '1px solid rgba(255,255,255,0.08)',
+      color: active ? '#c9bfff' : '#a8a6b3',
+      transition:'all 0.15s ease'
+    }}>{label}</div>
+  );
+}
+
 function PersonRow({ p, onClick }) {
   return (
     <div onClick={onClick} style={{ display:'flex', alignItems:'center', gap:12, background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, padding:'12px 14px', cursor:'pointer' }}>
       <div style={{ width:44, height:44, borderRadius:'50%', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:800, fontSize:16, color:'#0b0c10' }}>{p.name.charAt(0).toUpperCase()}</div>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:15, fontWeight:700 }}>{p.name}</div>
-        <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:2 }}>{p.sign} · {p.relation}</div>
+        <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:2 }}>{ZODIAC_SYMBOLS[p.sign] || ''} {p.sign} · {p.relation}</div>
       </div>
       <div style={{ color:'#6b6976', fontSize:18 }}>›</div>
     </div>
