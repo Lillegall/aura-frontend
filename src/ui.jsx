@@ -54,9 +54,28 @@ export function Spinner() {
   );
 }
 
-export function OfflineBadge() {
+/* kind: 'preview' (server answered mock:true) | 'device' (network failure, local fallback) */
+export function OfflineBadge({ kind }) {
   const { t } = useI18n();
-  return <div className="badge-offline" title={t('common.offlineHint')}>{t('common.offline')}</div>;
+  const preview = kind === 'preview';
+  return (
+    <div className="offline-wrap">
+      <span className={`badge-offline ${preview ? 'preview' : ''}`}>{t(preview ? 'common.preview' : 'common.offline')}</span>
+      <span className="badge-hint">{t(preview ? 'common.previewHint' : 'common.offlineHint')}</span>
+    </div>
+  );
+}
+
+/* Shown when a result was generated in a language other than the current one */
+export function LangBanner({ resultLang, onRegen, busy }) {
+  const { t, lang } = useI18n();
+  if (!resultLang || resultLang === lang) return null;
+  return (
+    <div className="lang-banner" role="status">
+      <span>{t(`regen.from.${resultLang}`)}</span>
+      <button type="button" onClick={onRegen} disabled={busy}>{t(`regen.to.${lang}`)}</button>
+    </div>
+  );
 }
 
 export function Toast({ text }) {

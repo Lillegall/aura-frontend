@@ -43,7 +43,8 @@ function sanitizePerson(p) {
   if (!p || typeof p !== 'object' || !p.id) return null;
   const dna = {};
   DNA_IDS.forEach(k => {
-    const n = Number(p.dna && p.dna[k]);
+    const raw = p.dna ? p.dna[k] : undefined;
+    const n = raw === null || raw === undefined || raw === '' || typeof raw === 'boolean' ? NaN : Number(raw);
     dna[k] = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 50;
   });
   return {
@@ -95,11 +96,13 @@ export function eventText(e, t) {
 
 /* ---------- localized mock fallbacks ---------- */
 export function mockSituation(text, knownSign, t, lang) {
-  const id = toSignId(knownSign) || findSignInText(text) || 'libra';
+  const id = toSignId(knownSign) || findSignInText(text) || '';
   const m = t('mock.situation');
   return {
     summary: m.summary,
-    whatsHappening: t('mock.situation.whatsHappening', { sign: signName(lang, id) }),
+    whatsHappening: id
+      ? t('mock.situation.whatsHappening', { sign: signName(lang, id) })
+      : m.whatsHappeningNoSign,
     strategy: m.strategy,
     avoid: m.avoid,
     message: m.message,

@@ -10,7 +10,7 @@ import {
   personName, personStatus, eventText, mockSituation, mockMessage, mockChat, mockCoach
 } from './data.js';
 import {
-  Icon, Btn, Card, Label, Spinner, OfflineBadge, Toast, Chip, SignGlyph, Avatar, ZodiacHalo
+  Icon, Btn, Card, Label, Spinner, OfflineBadge, LangBanner, Toast, Chip, SignGlyph, Avatar, ZodiacHalo
 } from './ui.jsx';
 import { MySignSheet, PersonFormSheet, PrivacySheet } from './sheets.jsx';
 
@@ -25,6 +25,9 @@ const NAV = [
   { key: 'chat', icon: Icon.chat },
   { key: 'coach', icon: Icon.coach }
 ];
+
+/* Toast param for a person's name: seed names stay translatable */
+const nameVar = p => (p.name ? p.name : p.seed ? { k: `seed.${p.seed}.name` } : '?');
 
 const str = v => (typeof v === 'string' ? v : v == null ? '' : String(v));
 
@@ -57,15 +60,18 @@ export default function AuraApp() {
 
   /* ---------- navigation / ui ---------- */
   const [screen, setScreen] = useState('home');
+  const screenRef = useRef(screen);
+  useEffect(() => { screenRef.current = screen; }, [screen]);
   const [sheet, setSheet] = useState(() => (loadProfile().onboarded ? null : { type: 'mySign', firstRun: true }));
-  const [toast, setToast] = useState('');
+  /* Toasts store key + params and are translated at render time */
+  const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const scrollRef = useRef(null);
 
-  function showToast(text) {
-    setToast(text);
+  function showToast(key, vars) {
+    setToast({ key, vars, n: Date.now() });
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(''), 4500);
+    toastTimer.current = setTimeout(() => setToast(null), 4500);
   }
   function goTo(s) { setScreen(s); }
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [screen]);
@@ -96,30 +102,42 @@ export default function AuraApp() {
 
   const homePerson = people.find(p => p.id === homePersonId) || null;
 
-  /* ---------- API helper with localized fallback ---------- */
-  async function request(endpoint, payload, fallback) {
+  /* ---------- request ids: stale responses are ignored ---------- */
+  const reqSeq = useRef({});
+  function nextReq(name) {
+    const id = (reqSeq.current[name] || 0) + 1;
+    reqSeq.current[name] = id;
+    return id;
+  }
+  const isCurrent = (name, id) => reqSeq.current[name] === id;
+
+  /* ---------- API helper with localized fallback ----------
+     Returns { data, source: 'server' | 'device' } or null. */
+  async function request(endpoint, payload, reqLang, fallback) {
     try {
-      return await post(endpoint, payload, lang);
+      return { data: await post(endpoint, payload, reqLang), source: 'server' };
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.recoverable && fallback) {
-          showToast(t(e.kind === 'timeout' ? 'errors.timeout' : 'errors.network'));
-          return fallback();
+          showToast(e.kind === 'timeout' ? 'errors.timeout' : 'errors.network');
+          return { data: fallback(), source: 'device' };
         }
-        if (e.kind === 'rate_limited') showToast(t('errors.rateLimited'));
-        else if (e.kind === 'bad_request') showToast(t('errors.badRequest'));
-        else showToast(t('errors.unavailable'));
+        if (e.kind === 'rate_limited') showToast('errors.rateLimited');
+        else if (e.kind === 'bad_request') showToast('errors.badRequest');
+        else showToast('errors.unavailable');
       } else {
-        showToast(t('errors.generic'));
+        showToast('errors.generic');
       }
       return null;
     }
   }
+  /* device = local fallback after a network failure; preview = server answered mock:true */
+  const offlineKind = res => (res.source === 'device' ? 'device' : res.data && res.data.mock ? 'preview' : null);
 
-  function contextLine(extra) {
+  function contextLine(l, knownSign, extra) {
     const parts = [];
-    if (profile.sign) parts.push(t('context.mySign', { sign: signName(lang, profile.sign) }));
-    if (homeKnownSign) parts.push(t('context.theirSign', { sign: signName(lang, homeKnownSign) }));
+    if (profile.sign) parts.push(translate(l, 'context.mySign', { sign: signName(l, profile.sign) }));
+    if (knownSign) parts.push(translate(l, 'context.theirSign', { sign: signName(l, knownSign) }));
     if (extra) parts.push(extra);
     return parts.join(' ').slice(0, MAX_TEXT) || undefined;
   }
@@ -136,43 +154,68 @@ export default function AuraApp() {
   }
 
   /* ---------- situation ---------- */
-  async function analyzeSituation() {
+  function analyzeSituation() {
     const text = homeInput.trim();
-    if (!text) { showToast(t('home.emptyInput')); return; }
-    const personId = homePerson ? homePerson.id : null;
-    const knownSign = homeKnownSign || undefined;
-    setAnalysis(null);
+    if (!text) { showToast('home.emptyInput'); return; }
+    runSituation({ text, knownSign: homeKnownSign || '', personId: homePerson ? homePerson.id : null }, false);
+  }
+
+  async function runSituation(req, regen) {
+    const l = lang;
+    const id = nextReq('situation');
+    nextReq('improve');
+    if (!regen) { setAnalysis(null); setScreen('analysis'); }
     setAnalysisLoading(true);
-    setScreen('analysis');
-    const raw = await request('/api/analyze-situation', { text, knownSign }, () => mockSituation(text, knownSign, t, lang));
+    const res = await request('/api/analyze-situation', { text: req.text, knownSign: req.knownSign || undefined }, l,
+      () => mockSituation(req.text, req.knownSign, (k, v) => translate(l, k, v), l));
+    if (!isCurrent('situation', id)) return;
     setAnalysisLoading(false);
-    if (!raw) { setScreen('home'); return; }
+    if (!res) {
+      if (!regen && screenRef.current === 'analysis') setScreen('home');
+      return;
+    }
+    const d = res.data;
+    const message = str(d.message);
     const result = {
-      summary: str(raw.summary), whatsHappening: str(raw.whatsHappening), strategy: str(raw.strategy),
-      avoid: str(raw.avoid), message: str(raw.message),
-      detectedSign: toSignId(raw.detectedSign) || homeKnownSign || '', mock: !!raw.mock
+      summary: str(d.summary), whatsHappening: str(d.whatsHappening), strategy: str(d.strategy),
+      avoid: str(d.avoid), message, originalMessage: message,
+      detectedSign: toSignId(d.detectedSign) || req.knownSign || '',
+      offline: offlineKind(res), lang: l, req
     };
     setAnalysis(result);
-    setAnalysisPersonId(personId);
-    if (personId) {
-      addTimelineEvent(personId, { id: newPersonId(), date: new Date().toISOString(), kind: 'analysis', text: result.summary });
-      showToast(t('analysis.addedTimeline', { name: personName(homePerson, t) }));
+    if (regen) return;
+    setAnalysisPersonId(req.personId);
+    const person = req.personId && people.find(p => p.id === req.personId);
+    if (person) {
+      addTimelineEvent(person.id, { id: newPersonId(), date: new Date().toISOString(), kind: 'analysis', text: result.summary });
+      showToast('analysis.addedTimeline', { name: nameVar(person) });
     }
   }
 
+  /* Always improves the ORIGINAL suggested message, never an already-improved one */
   async function improveMessage() {
     if (!analysis) return;
+    const a0 = analysis;
+    const id = nextReq('improve');
     setAnalysisLoading(true);
-    const r = await request('/api/improve-message', { message: analysis.message, context: contextLine(homeInput.trim()) });
+    const res = await request('/api/improve-message',
+      { message: a0.originalMessage, context: contextLine(a0.lang, a0.req.knownSign, a0.req.text) }, a0.lang);
+    if (!isCurrent('improve', id)) return;
     setAnalysisLoading(false);
-    if (r && r.improved) {
-      setAnalysis(a => ({ ...a, message: str(r.improved), mock: a.mock || !!r.mock }));
-      showToast(t('analysis.improved'));
+    if (res && res.data.improved) {
+      const kind = offlineKind(res);
+      setAnalysis(a => (a ? { ...a, message: str(res.data.improved), offline: a.offline || kind } : a));
+      showToast('analysis.improved');
     }
+  }
+  function resetMessage() {
+    nextReq('improve');
+    setAnalysisLoading(false);
+    setAnalysis(a => (a ? { ...a, message: a.originalMessage } : a));
   }
 
   function copyText(text) {
-    const ok = () => showToast(t('common.copied'));
+    const ok = () => showToast('common.copied');
     const legacy = () => {
       try {
         const ta = document.createElement('textarea');
@@ -180,8 +223,8 @@ export default function AuraApp() {
         document.body.appendChild(ta); ta.select();
         const done = document.execCommand('copy');
         document.body.removeChild(ta);
-        showToast(done ? t('common.copied') : t('common.copyFail'));
-      } catch { showToast(t('common.copyFail')); }
+        showToast(done ? 'common.copied' : 'common.copyFail');
+      } catch { showToast('common.copyFail'); }
     };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, legacy);
     else legacy();
@@ -204,7 +247,7 @@ export default function AuraApp() {
         if (p.seed && !p.name && values.name === t(`seed.${p.seed}.name`)) delete next.name;
         return next;
       }));
-      showToast(t('form.updated', { name: values.name }));
+      showToast('form.updated', { name: values.name });
     } else {
       const now = new Date().toISOString();
       const timeline = [{ id: newPersonId(), date: now, textKey: 'person.createdEvent' }];
@@ -219,7 +262,7 @@ export default function AuraApp() {
       };
       setPeople(ps => [p, ...ps]);
       if (s.fromAnalysis) setAnalysisPersonId(p.id);
-      showToast(t('form.saved', { name: values.name }));
+      showToast('form.saved', { name: values.name });
     }
     setSheet(null);
   }
@@ -232,7 +275,7 @@ export default function AuraApp() {
     if (analysisPersonId === id) setAnalysisPersonId(null);
     setSheet(null);
     setScreen('people');
-    if (p) showToast(t('form.deleted', { name: personName(p, t) }));
+    if (p) showToast('form.deleted', { name: nameVar(p) });
   }
 
   function newAnalysisForPerson(p) {
@@ -241,7 +284,7 @@ export default function AuraApp() {
     setHomeKnownSign(p.sign || '');
     setHomePersonId(p.id);
     setScreen('home');
-    showToast(t('person.ready', { name: personName(p, t) }));
+    showToast('person.ready', { name: nameVar(p) });
   }
 
   const toggle = (setter, v) => setter(prev => (prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]));
@@ -250,66 +293,109 @@ export default function AuraApp() {
     (signFilter.length === 0 || signFilter.includes(p.sign)));
 
   /* ---------- messages ---------- */
-  async function analyzeMessage() {
+  function analyzeMessage() {
     const text = msgInput.trim();
-    if (!text) { showToast(t('messages.empty')); return; }
+    if (!text) { showToast('messages.empty'); return; }
+    runMessage(text);
+  }
+  async function runMessage(text) {
+    const l = lang;
+    const id = nextReq('msg');
+    nextReq('tone');
     setMsgLoading(true);
-    const r = await request('/api/analyze-message', { text }, () => mockMessage(t));
+    const res = await request('/api/analyze-message', { text }, l, () => mockMessage((k, v) => translate(l, k, v)));
+    if (!isCurrent('msg', id)) return;
     setMsgLoading(false);
-    if (!r) return;
-    setMsgResult({ perceived: str(r.perceived), risk: toRiskId(r.risk), improved: str(r.improved), mock: !!r.mock });
-    if (!r.mock) showToast(t('messages.analyzed'));
+    if (!res) return;
+    const d = res.data;
+    const improved = str(d.improved);
+    const kind = offlineKind(res);
+    setMsgResult({ perceived: str(d.perceived), risk: toRiskId(d.risk), baseImproved: improved, improved, tone: null, offline: kind, lang: l, text });
+    if (!kind) showToast('messages.analyzed');
     reveal('msg-result');
   }
 
+  /* Always rewrites the base improved text from analyze-message: tones never compound */
   async function changeTone(tone) {
     if (!msgResult) return;
+    const m0 = msgResult;
+    const id = nextReq('tone');
     setMsgLoading(true);
-    const r = await request('/api/change-tone', { message: msgResult.improved, tone });
+    const res = await request('/api/change-tone', { message: m0.baseImproved, tone }, m0.lang);
+    if (!isCurrent('tone', id)) return;
     setMsgLoading(false);
-    if (r && r.rewritten) {
-      setMsgResult(m => ({ ...m, improved: str(r.rewritten), mock: m.mock || !!r.mock }));
-      showToast(t('messages.toneUpdated', { tone: t(`tones.${tone}`) }));
+    if (res && res.data.rewritten) {
+      const kind = offlineKind(res);
+      setMsgResult(m => (m ? { ...m, improved: str(res.data.rewritten), tone, offline: m.offline || kind } : m));
+      showToast('messages.toneUpdated', { tone: { k: `tones.${tone}` } });
     }
+  }
+  function resetTone() {
+    nextReq('tone');
+    setMsgLoading(false);
+    setMsgResult(m => (m ? { ...m, improved: m.baseImproved, tone: null } : m));
   }
 
   /* ---------- chat ---------- */
-  async function analyzeChat() {
+  function analyzeChat() {
     const text = chatInput.trim();
-    if (!text) { showToast(t('chat.empty')); return; }
+    if (!text) { showToast('chat.empty'); return; }
+    runChat(text);
+  }
+  async function runChat(text) {
+    const l = lang;
+    const id = nextReq('chat');
     setChatLoading(true);
-    const r = await request('/api/analyze-chat', { text }, () => mockChat(t));
+    const res = await request('/api/analyze-chat', { text }, l, () => mockChat((k, v) => translate(l, k, v)));
+    if (!isCurrent('chat', id)) return;
     setChatLoading(false);
-    if (!r) return;
-    setChatResult({ invest: str(r.invest), positive: str(r.positive), distance: str(r.distance), nextstep: str(r.nextstep), mock: !!r.mock });
-    if (!r.mock) showToast(t('chat.analyzed'));
+    if (!res) return;
+    const d = res.data;
+    const kind = offlineKind(res);
+    setChatResult({ invest: str(d.invest), positive: str(d.positive), distance: str(d.distance), nextstep: str(d.nextstep), offline: kind, lang: l, text });
+    if (!kind) showToast('chat.analyzed');
     reveal('chat-result');
   }
 
   /* ---------- coach ---------- */
-  async function selectFollowup(kind) {
+  function selectFollowup(kind) {
     setCoachFollowup(kind);
+    runCoach(kind);
+  }
+  async function runCoach(kind) {
+    const l = lang;
+    const id = nextReq('coach');
     setCoachLoading(true);
     const extra = (analysis && analysis.summary) || homeInput.trim();
-    const r = await request('/api/coach-strategy', { followupType: kind, context: contextLine(extra) }, () => mockCoach(kind, t));
+    const knownSign = (analysis && analysis.req.knownSign) || homeKnownSign;
+    const res = await request('/api/coach-strategy', { followupType: kind, context: contextLine(l, knownSign, extra) }, l,
+      () => mockCoach(kind, (k, v) => translate(l, k, v)));
+    if (!isCurrent('coach', id)) return;
     setCoachLoading(false);
-    if (r) { setCoachStrategy({ text: str(r.strategy), mock: !!r.mock }); reveal('coach-result'); }
+    if (res) { setCoachStrategy({ text: str(res.data.strategy), offline: offlineKind(res), lang: l, kind }); reveal('coach-result'); }
   }
 
   /* ---------- my sign ---------- */
   function saveMySign(id) {
     setProfile({ sign: id, onboarded: true });
     setSheet(null);
-    showToast(t('onboarding.saved', { sign: signName(lang, id) }));
+    showToast('onboarding.saved', { sign: { k: `signs.${id}` } });
   }
   function skipOnboarding() { setProfile(p => ({ ...p, onboarded: true })); setSheet(null); }
-  function clearMySign() { setProfile({ sign: '', onboarded: true }); setSheet(null); showToast(t('onboarding.cleared')); }
+  function clearMySign() { setProfile({ sign: '', onboarded: true }); setSheet(null); showToast('onboarding.cleared'); }
 
   function clearLocalData() {
     storage.remove(KEYS.people);
     storage.remove(KEYS.profile);
     storage.remove(LANG_KEY);
     try { window.location.reload(); } catch { /* noop */ }
+  }
+
+  function toastText() {
+    if (!toast) return '';
+    const vars = {};
+    Object.entries(toast.vars || {}).forEach(([k, v]) => { vars[k] = v && typeof v === 'object' && v.k ? t(v.k) : v; });
+    return t(toast.key, vars);
   }
 
   /* ============================================================
@@ -425,7 +511,7 @@ export default function AuraApp() {
                   <ul>
                     {t('companion.features').map(f => <li key={f}><span className="star" aria-hidden="true">✦</span>{f}</li>)}
                   </ul>
-                  <Btn variant="gold" onClick={() => showToast(t('companion.soon'))}>{t('companion.cta')}</Btn>
+                  <Btn variant="gold" onClick={() => showToast('companion.soon')}>{t('companion.cta')}</Btn>
                 </section>
 
                 <footer className="footer">
@@ -448,10 +534,12 @@ export default function AuraApp() {
                 )}
                 {analysis && (
                   <>
+                    <LangBanner resultLang={analysis.lang} busy={analysisLoading}
+                      onRegen={() => runSituation(analysis.req, true)} />
+                    {analysis.offline && <OfflineBadge kind={analysis.offline} />}
                     <div className="pills" style={{ marginBottom: 12 }}>
-                      {analysis.mock && <OfflineBadge />}
                       {analysis.detectedSign && (
-                        <span className="pill" style={{ marginBottom: 12 }}>
+                        <span className="pill">
                           <SignGlyph id={analysis.detectedSign} />{t('analysis.detected')}: {signName(lang, analysis.detectedSign)}
                         </span>
                       )}
@@ -468,6 +556,9 @@ export default function AuraApp() {
                       <Btn variant="secondary" onClick={() => copyText(analysis.message)}><Icon.copy />{t('common.copy')}</Btn>
                       <Btn variant="ghost" onClick={improveMessage} disabled={analysisLoading}><Icon.spark />{t('analysis.improve')}</Btn>
                     </div>
+                    {analysis.message !== analysis.originalMessage && (
+                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetMessage}>{t('common.reset')}</Btn>
+                    )}
                     <div className="row" style={{ marginTop: 22 }}>
                       {(() => {
                         const ap = people.find(p => p.id === analysisPersonId);
@@ -543,7 +634,8 @@ export default function AuraApp() {
                 {msgLoading && !msgResult && <Spinner />}
                 {msgResult && (
                   <div id="msg-result" style={{ marginTop: 22, scrollMarginTop: 12 }}>
-                    {msgResult.mock && <OfflineBadge />}
+                    <LangBanner resultLang={msgResult.lang} busy={msgLoading} onRegen={() => runMessage(msgResult.text)} />
+                    {msgResult.offline && <OfflineBadge kind={msgResult.offline} />}
                     <Card title={t('messages.perceived')} accent="violet">{msgResult.perceived}</Card>
                     <Card title={t('messages.risk')}>
                       <div className={`risk ${msgResult.risk}`}><i aria-hidden="true" />{t(`risk.${msgResult.risk}`)}</div>
@@ -556,9 +648,14 @@ export default function AuraApp() {
                     <Label>{t('messages.changeTone')}</Label>
                     <div className="grid2">
                       {TONE_IDS.map(tone => (
-                        <Btn key={tone} variant="secondary" size="sm" onClick={() => changeTone(tone)} disabled={msgLoading}>{t(`tones.${tone}`)}</Btn>
+                        <Btn key={tone} variant="secondary" size="sm" className={msgResult.tone === tone ? 'selected' : ''}
+                          aria-pressed={msgResult.tone === tone ? 'true' : 'false'}
+                          onClick={() => changeTone(tone)} disabled={msgLoading}>{t(`tones.${tone}`)}</Btn>
                       ))}
                     </div>
+                    {msgResult.improved !== msgResult.baseImproved && (
+                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetTone}>{t('common.reset')}</Btn>
+                    )}
                   </div>
                 )}
               </>
@@ -583,7 +680,8 @@ export default function AuraApp() {
                 {chatLoading && !chatResult && <Spinner />}
                 {chatResult && (
                   <div id="chat-result" style={{ marginTop: 22, scrollMarginTop: 12 }}>
-                    {chatResult.mock && <OfflineBadge />}
+                    <LangBanner resultLang={chatResult.lang} busy={chatLoading} onRegen={() => runChat(chatResult.text)} />
+                    {chatResult.offline && <OfflineBadge kind={chatResult.offline} />}
                     <Card title={t('chat.invest')}>{chatResult.invest}</Card>
                     <Card title={t('chat.positive')} accent="emerald">{chatResult.positive}</Card>
                     <Card title={t('chat.distance')} accent="rose">{chatResult.distance}</Card>
@@ -620,7 +718,8 @@ export default function AuraApp() {
                 {coachLoading && <Spinner />}
                 {coachStrategy && !coachLoading && (
                   <div id="coach-result" style={{ marginTop: 16, scrollMarginTop: 12 }}>
-                    {coachStrategy.mock && <OfflineBadge />}
+                    <LangBanner resultLang={coachStrategy.lang} busy={coachLoading} onRegen={() => runCoach(coachStrategy.kind)} />
+                    {coachStrategy.offline && <OfflineBadge kind={coachStrategy.offline} />}
                     <Card title={t('coach.updated')} accent="gold" lead>{coachStrategy.text}</Card>
                   </div>
                 )}
@@ -641,7 +740,7 @@ export default function AuraApp() {
             })}
           </nav>
 
-          <Toast text={toast} />
+          <Toast text={toastText()} />
 
           {sheet && sheet.type === 'mySign' && (
             <MySignSheet firstRun={sheet.firstRun} value={profile.sign}
