@@ -557,7 +557,7 @@ export default function AuraApp() {
                       <Btn variant="ghost" onClick={improveMessage} disabled={analysisLoading}><Icon.spark />{t('analysis.improve')}</Btn>
                     </div>
                     {analysis.message !== analysis.originalMessage && (
-                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetMessage}>{t('common.reset')}</Btn>
+                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetMessage} disabled={analysisLoading}>{t('common.reset')}</Btn>
                     )}
                     <div className="row" style={{ marginTop: 22 }}>
                       {(() => {
@@ -654,7 +654,7 @@ export default function AuraApp() {
                       ))}
                     </div>
                     {msgResult.improved !== msgResult.baseImproved && (
-                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetTone}>{t('common.reset')}</Btn>
+                      <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetTone} disabled={msgLoading}>{t('common.reset')}</Btn>
                     )}
                   </div>
                 )}
