@@ -1,0 +1,15 @@
+{
+  "name": "Aura — Relationship Intelligence",
+  "short_name": "Aura",
+  "description": "Dì la cosa giusta, nel momento giusto. / Say the right thing, at the right time.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#07060c",
+  "theme_color": "#07060c",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

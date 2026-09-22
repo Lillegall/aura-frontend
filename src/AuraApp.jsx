@@ -1,215 +1,86 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  I18nContext, useI18n, translate, detectLang, LANGS, LANG_KEY, SIGN_IDS, SIGN_SYMBOLS, GENDER_IDS,
+  DNA_IDS, TONE_IDS, FOLLOWUP_IDS, signName, toSignId, toRiskId, relTime
+} from './i18n.js';
+import { storage, KEYS } from './storage.js';
+import { post, warmUp, ApiError, MAX_TEXT } from './api.js';
+import {
+  loadPeople, savePeople, loadProfile, saveProfile, newPersonId,
+  personName, personStatus, eventText, mockSituation, mockMessage, mockChat, mockCoach
+} from './data.js';
+import {
+  Icon, Btn, Card, Label, Spinner, OfflineBadge, Toast, Chip, SignGlyph, Avatar, ZodiacHalo
+} from './ui.jsx';
+import { MySignSheet, PersonFormSheet, PrivacySheet } from './sheets.jsx';
 
 /* ============================================================
    AURA — Relationship Intelligence
-   Motore di analisi collegato all'API Claude (con fallback mock)
    ============================================================ */
 
-const SIGNS = ['Ariete','Toro','Gemelli','Cancro','Leone','Vergine','Bilancia','Scorpione','Sagittario','Capricorno','Acquario','Pesci'];
-
-const ZODIAC_SYMBOLS = {
-  Ariete: '♈', Toro: '♉', Gemelli: '♊', Cancro: '♋', Leone: '♌', Vergine: '♍',
-  Bilancia: '♎', Scorpione: '♏', Sagittario: '♐', Capricorno: '♑', Acquario: '♒', Pesci: '♓'
-};
-
-const EXAMPLE_TEXT = "Ho litigato con la mia ragazza Leone perché dice che la controllo troppo. Vorrei scriverle ma non so come farlo senza peggiorare la situazione.";
-
-const SEED_PEOPLE = [
-  {
-    id: 'marco', name: 'Marco', sign: 'Ariete', ascendant: 'Leone', gender: 'uomo', relation: 'Amico',
-    status: "Stabile, ma comunicazione un po' rada nelle ultime settimane.",
-    dna: { autonomia: 78, fiducia: 70, pressione: 30, dialogo: 64 },
-    timeline: [
-      { date: '2 giorni fa', text: 'Ti ha scritto per organizzare una serata, ancora da confermare.' },
-      { date: '2 settimane fa', text: 'Piccolo malinteso su un impegno mancato, chiarito velocemente.' },
-      { date: '1 mese fa', text: 'Serata insieme, clima molto positivo.' }
-    ]
-  },
-  {
-    id: 'laura', name: 'Laura', sign: 'Leone', ascendant: 'Vergine', gender: 'donna', relation: 'Partner',
-    status: 'Tensione recente legata al bisogno di autonomia percepito come controllo.',
-    dna: { autonomia: 35, fiducia: 58, pressione: 74, dialogo: 47 },
-    timeline: [
-      { date: 'Oggi', text: 'Discussione: si è sentita controllata riguardo ai suoi impegni.' },
-      { date: '3 giorni fa', text: 'Serata piacevole, buona sintonia.' },
-      { date: '1 settimana fa', text: 'Piccola discussione su gestione del tempo libero.' }
-    ]
-  },
-  {
-    id: 'papa', name: 'Papà', sign: 'Toro', ascendant: 'Capricorno', gender: 'uomo', relation: 'Familiare',
-    status: 'Rapporto solido, dialogo diretto ma a volte poco esplicito sulle emozioni.',
-    dna: { autonomia: 60, fiducia: 85, pressione: 20, dialogo: 55 },
-    timeline: [
-      { date: '1 settimana fa', text: 'Telefonata tranquilla, aggiornamenti di routine.' },
-      { date: '1 mese fa', text: 'Confronto su una decisione familiare, risolto con calma.' }
-    ]
-  }
+const NAV = [
+  { key: 'home', icon: Icon.home },
+  { key: 'people', icon: Icon.people },
+  { key: 'messages', icon: Icon.message },
+  { key: 'chat', icon: Icon.chat },
+  { key: 'coach', icon: Icon.coach }
 ];
 
-/* ---------- Backend Aura (Render) ---------- */
-const BACKEND_URL = 'https://aura-backend-icox.onrender.com';
+const str = v => (typeof v === 'string' ? v : v == null ? '' : String(v));
 
-async function callBackend(endpoint, payload) {
-  let res;
-  try {
-    res = await fetch(BACKEND_URL + endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-  } catch (networkErr) {
-    throw new Error('Impossibile contattare il server Aura: ' + networkErr.message);
-  }
-
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || ('Errore server: HTTP ' + res.status));
-  }
-
-  return res.json();
-}
-
-/* ---------- Mock fallbacks (used if API fails) ---------- */
-function mockSituationAnalysis(text) {
-  const sign = SIGNS.find(s => text.toLowerCase().includes(s.toLowerCase())) || 'Bilancia';
-  return {
-    summary: "Sembra che tu stia vivendo un momento di tensione dove il bisogno di spazio e quello di sicurezza non sono ancora allineati.",
-    whatsHappening: `Con un segno di ${sign}, il punto sensibile è spesso l'autonomia. Una domanda diretta sui suoi impegni può essere percepita come una messa in discussione della sua libertà, più che come interesse.`,
-    strategy: "Lascia passare qualche ora prima di scrivere. Riconosci il suo punto di vista prima di esprimere il tuo, e proponi un momento per parlarne di persona.",
-    avoid: "Evita di giustificarti troppo o di inviare più messaggi di fila se non risponde subito.",
-    message: "Ci ho pensato e capisco perché ti sei sentita così. Non voglio controllarti, voglio solo stare bene insieme. Ti va se ne parliamo con calma stasera?",
-    detectedSign: sign
-  };
-}
-function mockMessageAnalysis() {
-  return {
-    perceived: "Il tono generale potrebbe risultare un po' intenso, anche se il contenuto è ragionevole.",
-    risk: "medio",
-    improved: "Volevo dirti come mi sento, senza puntare il dito: mi piacerebbe trovare un momento per parlarne con calma insieme."
-  };
-}
-function mockChatAnalysis() {
-  return {
-    invest: "Il bilanciamento nella conversazione appare piuttosto equilibrato tra le due parti.",
-    positive: "Ci sono risposte relativamente rapide e un uso di toni informali, segno di un canale ancora aperto.",
-    distance: "Si notano alcune risposte brevi o ritardate, e una minore iniziativa nel proporre incontri.",
-    nextstep: "Lascia spazio per un giorno, poi proponi qualcosa di concreto e leggero."
-  };
-}
-
-/* ---------- Small UI atoms ---------- */
-function Spinner() {
-  return (
-    <div style={{display:'flex', alignItems:'center', gap:10, padding:'6px 0'}}>
-      <div style={{
-        width:16, height:16, borderRadius:'50%',
-        border:'2px solid rgba(139,124,246,0.25)', borderTopColor:'#8b7cf6',
-        animation:'spin 0.8s linear infinite'
-      }}/>
-      <span style={{fontSize:13, color:'#a8a6b3'}}>Aura sta pensando…</span>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-    </div>
-  );
-}
-
-function Card({ title, children, accent }) {
-  const accents = {
-    violet: { border:'rgba(139,124,246,0.35)', bg:'linear-gradient(180deg, rgba(139,124,246,0.15), #161821)' },
-    gold: { border:'rgba(212,175,106,0.35)', bg:'linear-gradient(180deg, rgba(212,175,106,0.15), #161821)' },
-    emerald: { border:'rgba(79,184,138,0.35)', bg:'linear-gradient(180deg, rgba(79,184,138,0.15), #161821)' },
-    danger: { border:'rgba(224,116,138,0.35)', bg:'linear-gradient(180deg, rgba(224,116,138,0.12), #161821)' }
-  };
-  const style = accent ? accents[accent] : { border:'rgba(255,255,255,0.08)', bg:'#161821' };
-  return (
-    <div style={{
-      background: style.bg, border:`1px solid ${style.border}`, borderRadius:16,
-      padding:16, marginBottom:12
-    }}>
-      <div style={{
-        fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em',
-        color:'#6b6976', fontWeight:700, marginBottom:8
-      }}>{title}</div>
-      <div style={{fontSize:14.5, lineHeight:1.55, color:'#f2f1ee'}}>{children}</div>
-    </div>
-  );
-}
-
-function Btn({ children, onClick, variant='secondary', style={}, disabled }) {
-  const base = {
-    display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8,
-    padding:'14px 20px', borderRadius:14, fontSize:15, fontWeight:700,
-    border:'none', cursor: disabled ? 'default':'pointer', width:'100%',
-    fontFamily:'inherit', opacity: disabled ? 0.6 : 1
-  };
-  const variants = {
-    primary: { background:'linear-gradient(135deg, #8b7cf6, #6a5ce0)', color:'#fff', boxShadow:'0 8px 20px rgba(139,124,246,0.35)' },
-    secondary: { background:'#161821', color:'#f2f1ee', border:'1px solid rgba(255,255,255,0.08)' },
-    ghost: { background:'transparent', color:'#8b7cf6', border:'1px solid rgba(139,124,246,0.35)' },
-    gold: { background:'linear-gradient(135deg, #d4af6a, #b98f4b)', color:'#1a1204' }
-  };
-  return (
-    <button disabled={disabled} onClick={onClick} style={{...base, ...variants[variant], ...style}}
-      onMouseDown={e => !disabled && (e.currentTarget.style.transform='scale(0.98)')}
-      onMouseUp={e => e.currentTarget.style.transform='scale(1)'}>
-      {children}
-    </button>
-  );
-}
-
-function Toast({ text }) {
-  if (!text) return null;
-  return (
-    <div style={{
-      position:'absolute', left:'50%', bottom:100, transform:'translateX(-50%)',
-      background:'#fff', color:'#111', padding:'12px 18px', borderRadius:16,
-      fontSize:12.5, fontWeight:600, boxShadow:'0 10px 30px rgba(0,0,0,0.4)', zIndex:200,
-      maxWidth:320, wordBreak:'break-word', lineHeight:1.4
-    }}>{text}</div>
-  );
-}
-
-const NAV_ITEMS = [
-  { key:'home', label:'Home', icon:'⌂' },
-  { key:'people', label:'Persone', icon:'☺' },
-  { key:'messages', label:'Messaggi', icon:'✉' },
-  { key:'chat', label:'Chat', icon:'💬' },
-  { key:'coach', label:'Coach', icon:'✦' }
-];
-
-function BottomNav({ active, onNavigate }) {
-  return (
-    <div style={{
-      display:'flex', justifyContent:'space-around', alignItems:'center',
-      padding:'10px 6px 16px 6px', background:'rgba(17,19,25,0.9)',
-      backdropFilter:'blur(10px)', borderTop:'1px solid rgba(255,255,255,0.08)'
-    }}>
-      {NAV_ITEMS.map(item => (
-        <button key={item.key} onClick={() => onNavigate(item.key)} style={{
-          background:'none', border:'none', color: active===item.key ? '#8b7cf6' : '#6b6976',
-          display:'flex', flexDirection:'column', alignItems:'center', gap:4,
-          fontSize:10, fontWeight:600, cursor:'pointer', padding:'4px 8px'
-        }}>
-          <span style={{fontSize:19, lineHeight:1}}>{item.icon}</span>
-          <span>{item.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/* ============================================================ */
 export default function AuraApp() {
-  const [screen, setScreen] = useState('home'); // home, analysis, people, personDetail, messages, chat, coach
-  const [homeInput, setHomeInput] = useState('');
-  const [homeKnownSign, setHomeKnownSign] = useState('');
-  const [analysis, setAnalysis] = useState(null);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [people, setPeople] = useState(SEED_PEOPLE);
-  const [genderFilter, setGenderFilter] = useState([]); // array di stringhe selezionate
-  const [signFilter, setSignFilter] = useState([]);
-  const [currentPersonId, setCurrentPersonId] = useState(null);
+  /* ---------- language ---------- */
+  const [lang, setLangState] = useState(detectLang);
+  const t = useCallback((key, vars) => translate(lang, key, vars), [lang]);
+  const setLang = useCallback(l => {
+    if (!LANGS.includes(l)) return;
+    setLangState(l);
+    storage.set(LANG_KEY, l);
+  }, []);
+  const i18n = useMemo(() => ({ lang, t, setLang }), [lang, t, setLang]);
+
+  useEffect(() => {
+    document.documentElement.lang = lang;
+    document.title = t('meta.title');
+    const desc = document.querySelector('meta[name="description"]');
+    if (desc) desc.setAttribute('content', t('meta.description'));
+  }, [lang, t]);
+
+  /* ---------- persisted data ---------- */
+  const [people, setPeople] = useState(loadPeople);
+  const [profile, setProfile] = useState(loadProfile);
+  useEffect(() => { savePeople(people); }, [people]);
+  useEffect(() => { saveProfile(profile); }, [profile]);
+
+  /* Render free tier cold start: wake the backend right away */
+  useEffect(() => { warmUp(); }, []);
+
+  /* ---------- navigation / ui ---------- */
+  const [screen, setScreen] = useState('home');
+  const [sheet, setSheet] = useState(() => (loadProfile().onboarded ? null : { type: 'mySign', firstRun: true }));
   const [toast, setToast] = useState('');
   const toastTimer = useRef(null);
+  const scrollRef = useRef(null);
+
+  function showToast(text) {
+    setToast(text);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(''), 4500);
+  }
+  function goTo(s) { setScreen(s); }
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [screen]);
+
+  /* ---------- home / analysis state ---------- */
+  const [homeInput, setHomeInput] = useState('');
+  const [homeKnownSign, setHomeKnownSign] = useState('');
+  const [homePersonId, setHomePersonId] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [analysisPersonId, setAnalysisPersonId] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+
+  const [genderFilter, setGenderFilter] = useState([]);
+  const [signFilter, setSignFilter] = useState([]);
+  const [currentPersonId, setCurrentPersonId] = useState(null);
 
   const [msgInput, setMsgInput] = useState('');
   const [msgResult, setMsgResult] = useState(null);
@@ -223,514 +94,658 @@ export default function AuraApp() {
   const [coachStrategy, setCoachStrategy] = useState(null);
   const [coachLoading, setCoachLoading] = useState(false);
 
-  function showToast(text) {
-    setToast(text);
-    clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(''), 8000);
+  const homePerson = people.find(p => p.id === homePersonId) || null;
+
+  /* ---------- API helper with localized fallback ---------- */
+  async function request(endpoint, payload, fallback) {
+    try {
+      return await post(endpoint, payload, lang);
+    } catch (e) {
+      if (e instanceof ApiError) {
+        if (e.recoverable && fallback) {
+          showToast(t(e.kind === 'timeout' ? 'errors.timeout' : 'errors.network'));
+          return fallback();
+        }
+        if (e.kind === 'rate_limited') showToast(t('errors.rateLimited'));
+        else if (e.kind === 'bad_request') showToast(t('errors.badRequest'));
+        else showToast(t('errors.unavailable'));
+      } else {
+        showToast(t('errors.generic'));
+      }
+      return null;
+    }
   }
 
-  function goTo(s) { setScreen(s); }
+  function contextLine(extra) {
+    const parts = [];
+    if (profile.sign) parts.push(t('context.mySign', { sign: signName(lang, profile.sign) }));
+    if (homeKnownSign) parts.push(t('context.theirSign', { sign: signName(lang, homeKnownSign) }));
+    if (extra) parts.push(extra);
+    return parts.join(' ').slice(0, MAX_TEXT) || undefined;
+  }
 
-  /* ---------- Situazione ---------- */
+  function reveal(id) {
+    requestAnimationFrame(() => {
+      const el = document.getElementById(id);
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  function addTimelineEvent(personId, event) {
+    setPeople(ps => ps.map(p => (p.id === personId ? { ...p, timeline: [event, ...p.timeline] } : p)));
+  }
+
+  /* ---------- situation ---------- */
   async function analyzeSituation() {
     const text = homeInput.trim();
-    if (!text) { showToast('Scrivi prima cosa sta succedendo'); return; }
+    if (!text) { showToast(t('home.emptyInput')); return; }
+    const personId = homePerson ? homePerson.id : null;
+    const knownSign = homeKnownSign || undefined;
+    setAnalysis(null);
     setAnalysisLoading(true);
     setScreen('analysis');
-    try {
-      const result = await callBackend('/api/analyze-situation', { text, knownSign: homeKnownSign || undefined });
-      setAnalysis(result);
-    } catch (e) {
-      setAnalysis(mockSituationAnalysis(text));
-      showToast('Errore: ' + e.message);
-    }
+    const raw = await request('/api/analyze-situation', { text, knownSign }, () => mockSituation(text, knownSign, t, lang));
     setAnalysisLoading(false);
+    if (!raw) { setScreen('home'); return; }
+    const result = {
+      summary: str(raw.summary), whatsHappening: str(raw.whatsHappening), strategy: str(raw.strategy),
+      avoid: str(raw.avoid), message: str(raw.message),
+      detectedSign: toSignId(raw.detectedSign) || homeKnownSign || '', mock: !!raw.mock
+    };
+    setAnalysis(result);
+    setAnalysisPersonId(personId);
+    if (personId) {
+      addTimelineEvent(personId, { id: newPersonId(), date: new Date().toISOString(), kind: 'analysis', text: result.summary });
+      showToast(t('analysis.addedTimeline', { name: personName(homePerson, t) }));
+    }
   }
 
   async function improveMessage() {
     if (!analysis) return;
     setAnalysisLoading(true);
-    try {
-      const result = await callBackend('/api/improve-message', { message: analysis.message, context: homeInput });
-      setAnalysis(a => ({ ...a, message: result.improved }));
-      showToast('Messaggio migliorato');
-    } catch (e) {
-      showToast('Errore: ' + e.message);
-    }
+    const r = await request('/api/improve-message', { message: analysis.message, context: contextLine(homeInput.trim()) });
     setAnalysisLoading(false);
+    if (r && r.improved) {
+      setAnalysis(a => ({ ...a, message: str(r.improved), mock: a.mock || !!r.mock }));
+      showToast(t('analysis.improved'));
+    }
   }
 
   function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(() => showToast('Copiato negli appunti')).catch(() => showToast('Copiato negli appunti'));
-    } else {
-      showToast('Copiato negli appunti');
-    }
-  }
-
-  function savePersonFromAnalysis() {
-    const sign = (analysis && analysis.detectedSign) || 'Bilancia';
-    const name = 'Persona da situazione ' + (people.length + 1);
-    const newPerson = {
-      id: 'p_' + Date.now(), name, sign, ascendant: '', gender: 'altro', relation: 'Da definire',
-      status: 'Situazione recente in corso di gestione.',
-      dna: { autonomia:50, fiducia:50, pressione:50, dialogo:50 },
-      timeline: [{ date:'Ora', text:'Analisi creata dalla situazione descritta.' }]
+    const ok = () => showToast(t('common.copied'));
+    const legacy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        const done = document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast(done ? t('common.copied') : t('common.copyFail'));
+      } catch { showToast(t('common.copyFail')); }
     };
-    setPeople(p => [newPerson, ...p]);
-    showToast(`${name} salvata tra le Persone`);
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, legacy);
+    else legacy();
   }
 
-  /* ---------- Persone ---------- */
+  /* ---------- people ---------- */
   function openPerson(id) { setCurrentPersonId(id); setScreen('personDetail'); }
 
-  function toggleGenderFilter(g) {
-    setGenderFilter(prev => prev.includes(g) ? prev.filter(x => x !== g) : [...prev, g]);
+  function openAddPerson(prefill = {}, fromAnalysis = false) {
+    setSheet({ type: 'person', personId: null, prefill, fromAnalysis });
   }
-  function toggleSignFilter(s) {
-    setSignFilter(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]);
-  }
-  const filteredPeople = people.filter(p => {
-    const genderOk = genderFilter.length === 0 || genderFilter.includes(p.gender);
-    const signOk = signFilter.length === 0 || signFilter.includes(p.sign);
-    return genderOk && signOk;
-  });
 
-  function quickAddPerson() {
-    const sign = SIGNS[Math.floor(Math.random()*SIGNS.length)];
-    const ascendant = SIGNS[Math.floor(Math.random()*SIGNS.length)];
-    const gender = ['uomo','donna','altro'][Math.floor(Math.random()*3)];
-    const name = 'Nuova persona ' + (people.length + 1);
-    const newPerson = {
-      id:'p_'+Date.now(), name, sign, ascendant, gender, relation:'Da definire',
-      status:'Nessuna informazione ancora raccolta su questa relazione.',
-      dna:{ autonomia:50, fiducia:50, pressione:50, dialogo:50 },
-      timeline:[{ date:'Ora', text:'Persona creata manualmente dalla lista Persone.' }]
-    };
-    setPeople(p => [newPerson, ...p]);
-    showToast(`${name} aggiunta`);
+  function handleSavePerson(values) {
+    const s = sheet;
+    if (s.personId) {
+      setPeople(ps => ps.map(p => {
+        if (p.id !== s.personId) return p;
+        const next = { ...p, ...values };
+        // Seed people keep a localized name unless the user renamed them
+        if (p.seed && !p.name && values.name === t(`seed.${p.seed}.name`)) delete next.name;
+        return next;
+      }));
+      showToast(t('form.updated', { name: values.name }));
+    } else {
+      const now = new Date().toISOString();
+      const timeline = [{ id: newPersonId(), date: now, textKey: 'person.createdEvent' }];
+      if (s.fromAnalysis && analysis) {
+        timeline.unshift({ id: newPersonId(), date: now, kind: 'analysis', text: analysis.summary });
+      }
+      const p = {
+        id: newPersonId(), ...values,
+        statusKey: s.fromAnalysis ? 'person.fromAnalysisStatus' : 'person.defaultStatus',
+        dna: { autonomy: 50, trust: 50, pressure: 50, dialogue: 50 },
+        timeline
+      };
+      setPeople(ps => [p, ...ps]);
+      if (s.fromAnalysis) setAnalysisPersonId(p.id);
+      showToast(t('form.saved', { name: values.name }));
+    }
+    setSheet(null);
   }
-  function newAnalysisForPerson() {
-    const p = people.find(x => x.id === currentPersonId);
-    if (!p) return;
-    setHomeInput(`Vorrei capire come comunicare meglio con ${p.name} (${p.sign}) riguardo alla situazione attuale: ${p.status}`);
-    setHomeKnownSign(p.sign);
+
+  function handleDeletePerson() {
+    const id = sheet.personId;
+    const p = people.find(x => x.id === id);
+    setPeople(ps => ps.filter(x => x.id !== id));
+    if (homePersonId === id) setHomePersonId(null);
+    if (analysisPersonId === id) setAnalysisPersonId(null);
+    setSheet(null);
+    setScreen('people');
+    if (p) showToast(t('form.deleted', { name: personName(p, t) }));
+  }
+
+  function newAnalysisForPerson(p) {
+    const signTxt = p.sign ? signName(lang, p.sign) : t('common.unknownSign');
+    setHomeInput(t('person.prefill', { name: personName(p, t), sign: signTxt, status: personStatus(p, t) }));
+    setHomeKnownSign(p.sign || '');
+    setHomePersonId(p.id);
     setScreen('home');
-    showToast(`Pronto per una nuova analisi su ${p.name}`);
+    showToast(t('person.ready', { name: personName(p, t) }));
   }
 
-  /* ---------- Messaggi ---------- */
+  const toggle = (setter, v) => setter(prev => (prev.includes(v) ? prev.filter(x => x !== v) : [...prev, v]));
+  const filteredPeople = people.filter(p =>
+    (genderFilter.length === 0 || genderFilter.includes(p.gender)) &&
+    (signFilter.length === 0 || signFilter.includes(p.sign)));
+
+  /* ---------- messages ---------- */
   async function analyzeMessage() {
     const text = msgInput.trim();
-    if (!text) { showToast('Incolla prima un messaggio'); return; }
+    if (!text) { showToast(t('messages.empty')); return; }
     setMsgLoading(true);
-    try {
-      const result = await callBackend('/api/analyze-message', { text });
-      setMsgResult(result);
-      showToast('Messaggio analizzato');
-    } catch (e) {
-      setMsgResult(mockMessageAnalysis());
-      showToast('Errore: ' + e.message);
-    }
+    const r = await request('/api/analyze-message', { text }, () => mockMessage(t));
     setMsgLoading(false);
+    if (!r) return;
+    setMsgResult({ perceived: str(r.perceived), risk: toRiskId(r.risk), improved: str(r.improved), mock: !!r.mock });
+    if (!r.mock) showToast(t('messages.analyzed'));
+    reveal('msg-result');
   }
 
   async function changeTone(tone) {
     if (!msgResult) return;
     setMsgLoading(true);
-    try {
-      const result = await callBackend('/api/change-tone', { message: msgResult.improved, tone });
-      setMsgResult(r => ({ ...r, improved: result.rewritten }));
-      showToast('Tono aggiornato: ' + tone);
-    } catch (e) {
-      showToast('Errore: ' + e.message);
-    }
+    const r = await request('/api/change-tone', { message: msgResult.improved, tone });
     setMsgLoading(false);
+    if (r && r.rewritten) {
+      setMsgResult(m => ({ ...m, improved: str(r.rewritten), mock: m.mock || !!r.mock }));
+      showToast(t('messages.toneUpdated', { tone: t(`tones.${tone}`) }));
+    }
   }
 
-  /* ---------- Chat ---------- */
+  /* ---------- chat ---------- */
   async function analyzeChat() {
     const text = chatInput.trim();
-    if (!text) { showToast('Incolla prima una conversazione'); return; }
+    if (!text) { showToast(t('chat.empty')); return; }
     setChatLoading(true);
-    try {
-      const result = await callBackend('/api/analyze-chat', { text });
-      setChatResult(result);
-      showToast('Chat analizzata');
-    } catch (e) {
-      setChatResult(mockChatAnalysis());
-      showToast('Errore: ' + e.message);
-    }
+    const r = await request('/api/analyze-chat', { text }, () => mockChat(t));
     setChatLoading(false);
+    if (!r) return;
+    setChatResult({ invest: str(r.invest), positive: str(r.positive), distance: str(r.distance), nextstep: str(r.nextstep), mock: !!r.mock });
+    if (!r.mock) showToast(t('chat.analyzed'));
+    reveal('chat-result');
   }
 
-  /* ---------- Coach ---------- */
+  /* ---------- coach ---------- */
   async function selectFollowup(kind) {
     setCoachFollowup(kind);
     setCoachLoading(true);
-    try {
-      const result = await callBackend('/api/coach-strategy', { followupType: kind, context: homeInput });
-      setCoachStrategy(result.strategy);
-    } catch (e) {
-      const fallback = {
-        risposto: 'Ottimo segnale. Rispondi con un tono naturale, senza affrettarti a chiudere il discorso.',
-        visualizzato: 'Ha letto ma non ha risposto: probabilmente sta elaborando. Evita di scrivere di nuovo per alcune ore.',
-        nonletto: 'Non ha ancora letto: resisti all\'impulso di controllare ripetutamente.',
-        chiamato: 'Un buon segnale: mantieni un tono calmo, ascolta più di quanto parli.'
-      };
-      setCoachStrategy(fallback[kind]);
-      showToast('Errore: ' + e.message);
-    }
+    const extra = (analysis && analysis.summary) || homeInput.trim();
+    const r = await request('/api/coach-strategy', { followupType: kind, context: contextLine(extra) }, () => mockCoach(kind, t));
     setCoachLoading(false);
+    if (r) { setCoachStrategy({ text: str(r.strategy), mock: !!r.mock }); reveal('coach-result'); }
+  }
+
+  /* ---------- my sign ---------- */
+  function saveMySign(id) {
+    setProfile({ sign: id, onboarded: true });
+    setSheet(null);
+    showToast(t('onboarding.saved', { sign: signName(lang, id) }));
+  }
+  function skipOnboarding() { setProfile(p => ({ ...p, onboarded: true })); setSheet(null); }
+  function clearMySign() { setProfile({ sign: '', onboarded: true }); setSheet(null); showToast(t('onboarding.cleared')); }
+
+  function clearLocalData() {
+    storage.remove(KEYS.people);
+    storage.remove(KEYS.profile);
+    storage.remove(LANG_KEY);
+    try { window.location.reload(); } catch { /* noop */ }
   }
 
   /* ============================================================
      RENDER
      ============================================================ */
-  const phoneStyle = {
-    width:390, maxWidth:'100%', height:844, maxHeight:'92vh',
-    background:'#0b0c10', borderRadius:46, border:'10px solid #050505',
-    boxShadow:'0 30px 80px rgba(0,0,0,0.6)', position:'relative', overflow:'hidden',
-    display:'flex', flexDirection:'column', margin:'24px auto', fontFamily:'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    color:'#f2f1ee'
-  };
+  const activeTab = screen === 'analysis' ? 'home' : screen === 'personDetail' ? 'people' : screen;
+  const currentPerson = people.find(x => x.id === currentPersonId) || null;
+  const isSub = screen === 'analysis' || screen === 'personDetail';
 
-  const contentStyle = { padding:'4px 20px 24px 20px', flex:'1 1 auto', overflowY:'auto' };
+  let subTitle = '';
+  let subBack = () => goTo('home');
+  let subAction = null;
+  if (screen === 'analysis') subTitle = t('analysis.title');
+  if (screen === 'personDetail') {
+    subBack = () => goTo('people');
+    if (currentPerson) {
+      subTitle = personName(currentPerson, t);
+      subAction = (
+        <button type="button" className="icon-btn" aria-label={t('person.editLabel', { name: subTitle })}
+          onClick={() => setSheet({ type: 'person', personId: currentPerson.id, prefill: currentPerson })}>
+          <Icon.edit />
+        </button>
+      );
+    }
+  }
 
   return (
-    <div style={{ background:'#000', minHeight:'100vh', padding:'24px 12px', display:'flex', justifyContent:'center' }}>
-      <div style={phoneStyle}>
-        <div style={{ position:'absolute', top:0, left:'50%', transform:'translateX(-50%)', width:120, height:26, background:'#050505', borderBottomLeftRadius:16, borderBottomRightRadius:16, zIndex:50 }}/>
-        <div style={{ height:46, flex:'0 0 auto', display:'flex', alignItems:'flex-end', justifyContent:'space-between', padding:'0 26px 8px 26px', fontSize:13, fontWeight:600 }}>
-          <span>9:41</span><span>●●●●  Wi-Fi  🔋</span>
-        </div>
-
-        {/* HOME */}
-        {screen === 'home' && (
-          <>
-            <div style={{ padding:'18px 20px 10px 20px' }}>
-              <div style={{ fontSize:28, fontWeight:800, letterSpacing:'0.02em', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', WebkitBackgroundClip:'text', backgroundClip:'text', color:'transparent' }}>Aura</div>
-              <div style={{ color:'#a8a6b3', fontSize:13, marginBottom:14 }}>Dì la cosa giusta, nel momento giusto.</div>
-              <ZodiacRibbon />
+    <I18nContext.Provider value={i18n}>
+      <div className="stage">
+        <div className="app">
+          {/* ---------- header ---------- */}
+          <header className="header">
+            {isSub ? (
+              <>
+                <button type="button" className="icon-btn" onClick={subBack} aria-label={t('header.back')}><Icon.back /></button>
+                <h1 className="header-title">{subTitle}</h1>
+                {subAction}
+              </>
+            ) : (
+              <>
+                <h1 className="logo">{t('brand.name')}</h1>
+                <button type="button" className="sign-btn"
+                  aria-label={profile.sign ? t('header.yourSign', { sign: signName(lang, profile.sign) }) : t('header.setSign')}
+                  onClick={() => setSheet({ type: 'mySign', firstRun: false })}>
+                  <span className="glyph" aria-hidden="true">{profile.sign ? SIGN_SYMBOLS[profile.sign] : '✦'}</span>
+                  {profile.sign && <span>{signName(lang, profile.sign)}</span>}
+                </button>
+              </>
+            )}
+            <div className="lang-toggle" role="group" aria-label={t('header.language')}>
+              {LANGS.map(l => (
+                <button type="button" key={l} aria-pressed={lang === l ? 'true' : 'false'}
+                  aria-label={t('header.switchTo', { lang: t(`langNames.${l}`) })} lang={l}
+                  onClick={() => setLang(l)}>{l.toUpperCase()}</button>
+              ))}
             </div>
-            <div style={contentStyle}>
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:10, marginTop:6 }}>Cosa sta succedendo?</div>
-              <textarea rows={6} value={homeInput} onChange={e=>{ setHomeInput(e.target.value); setHomeKnownSign(''); }} placeholder="Raccontami cosa sta succedendo…"
-                style={{ width:'100%', background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, color:'#f2f1ee', padding:16, fontSize:15, lineHeight:1.45, fontFamily:'inherit', resize:'none' }}/>
-              <div style={{ display:'flex', gap:10, marginTop:10 }}>
-                <Btn variant="secondary" onClick={()=>setHomeInput(EXAMPLE_TEXT)}>Esempio</Btn>
-                <Btn variant="primary" onClick={analyzeSituation}>Analizza</Btn>
-              </div>
+          </header>
 
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'20px 0 10px 0' }}>Persone recenti</div>
-              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                {people.slice(0,2).map(p => <PersonRow key={p.id} p={p} onClick={()=>openPerson(p.id)} />)}
-              </div>
-
-              <div style={{ background:'linear-gradient(135deg, rgba(139,124,246,0.14), rgba(212,175,106,0.10))', border:'1px solid rgba(212,175,106,0.3)', borderRadius:22, padding:20, marginTop:20 }}>
-                <div style={{ fontSize:15, fontWeight:800, color:'#d4af6a', marginBottom:6 }}>✦ Aura Companion</div>
-                <div style={{ fontSize:13.5, fontStyle:'italic', color:'#a8a6b3', marginBottom:14, lineHeight:1.5 }}>"Rimango con te finché questa situazione non si risolve."</div>
-                {['Follow-up nei giorni successivi','Memoria delle relazioni','Analisi chat avanzata','Simulazione risposta','Messaggi illimitati'].map(f => (
-                  <div key={f} style={{ fontSize:13, display:'flex', alignItems:'center', gap:8, padding:'6px 0' }}><span style={{color:'#d4af6a'}}>•</span>{f}</div>
-                ))}
-                <Btn variant="gold" style={{ marginTop:14 }} onClick={()=>showToast('Aura Companion — presto disponibile')}>Scopri Aura Companion</Btn>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* ANALISI */}
-        {screen === 'analysis' && (
-          <>
-            <TopBar title="Analisi della situazione" onBack={()=>goTo('home')} />
-            <div style={contentStyle}>
-              {analysisLoading && !analysis && <Spinner/>}
-              {analysis && (
-                <>
-                  <Card title="Riassunto" accent="violet">{analysis.summary}</Card>
-                  <Card title="🔎 Cosa probabilmente sta succedendo">{analysis.whatsHappening}</Card>
-                  <Card title="✅ Strategia consigliata" accent="emerald">{analysis.strategy}</Card>
-                  <Card title="⚠️ Cosa evitare" accent="danger">{analysis.avoid}</Card>
-
-                  <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'8px 0 10px 0' }}>Messaggio consigliato</div>
-                  <div style={{ background:'#0e2318', border:'1px solid rgba(79,184,138,0.35)', borderRadius:16, padding:16, fontSize:14.5, lineHeight:1.55, color:'#eafff3' }}>
-                    {analysis.message}
-                  </div>
-                  {analysisLoading && <div style={{marginTop:8}}><Spinner/></div>}
-                  <div style={{ display:'flex', gap:10, marginTop:10 }}>
-                    <Btn variant="secondary" onClick={()=>copyText(analysis.message)}>Copia</Btn>
-                    <Btn variant="ghost" onClick={improveMessage} disabled={analysisLoading}>Migliora messaggio</Btn>
-                  </div>
-                  <div style={{ display:'flex', gap:10, marginTop:20 }}>
-                    <Btn variant="secondary" onClick={savePersonFromAnalysis}>Salva persona</Btn>
-                    <Btn variant="primary" onClick={()=>goTo('coach')}>Vai al Coach</Btn>
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        {/* PERSONE */}
-        {screen === 'people' && (
-          <>
-            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>Persone</h1></div>
-            <div style={contentStyle}>
-              <div style={{ fontSize:11.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:8 }}>Genere</div>
-              <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:16 }}>
-                {['uomo','donna','altro'].map(g => (
-                  <FilterChip key={g} label={g.charAt(0).toUpperCase()+g.slice(1)} active={genderFilter.includes(g)} onClick={()=>toggleGenderFilter(g)} />
-                ))}
-              </div>
-
-              <div style={{ fontSize:11.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:8 }}>Segno</div>
-              <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:20 }}>
-                {SIGNS.map(s => (
-                  <FilterChip key={s} label={ZODIAC_SYMBOLS[s] + ' ' + s} active={signFilter.includes(s)} onClick={()=>toggleSignFilter(s)} />
-                ))}
-              </div>
-
-              {(genderFilter.length > 0 || signFilter.length > 0) && (
-                <div onClick={()=>{ setGenderFilter([]); setSignFilter([]); }} style={{ fontSize:12.5, color:'#8b7cf6', fontWeight:700, cursor:'pointer', marginBottom:16 }}>
-                  Cancella filtri
+          <main className="scroll" ref={scrollRef}>
+            {/* ---------- HOME ---------- */}
+            {screen === 'home' && (
+              <>
+                <div className="hero">
+                  <ZodiacHalo />
+                  <div className="kicker">{t('brand.kicker')}</div>
+                  <h2>{t('hero.line1')} <em>{t('hero.line2')}</em></h2>
                 </div>
-              )}
 
-              <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
-                {filteredPeople.length === 0 && (
-                  <div style={{ textAlign:'center', padding:'30px 20px', color:'#6b6976', fontSize:13.5 }}>Nessuna persona corrisponde ai filtri</div>
+                <Label>{t('home.question')}</Label>
+                {homePerson && (
+                  <div className="chips" style={{ marginBottom: 10 }}>
+                    <Chip className="person" active={false}
+                      aria-label={t('home.clearPerson', { name: personName(homePerson, t) })}
+                      onClick={() => setHomePersonId(null)}>
+                      {t('home.forPerson', { name: personName(homePerson, t) })} <span className="x" aria-hidden="true">×</span>
+                    </Chip>
+                  </div>
                 )}
-                {filteredPeople.map(p => <PersonRow key={p.id} p={p} onClick={()=>openPerson(p.id)} />)}
-              </div>
-              <div onClick={quickAddPerson} style={{ display:'flex', alignItems:'center', gap:10, justifyContent:'center', padding:14, border:'1px dashed rgba(255,255,255,0.08)', borderRadius:16, color:'#a8a6b3', fontSize:13.5, fontWeight:600, cursor:'pointer', marginTop:12 }}>
-                + Aggiungi persona
-              </div>
-            </div>
-            <BottomNav active="people" onNavigate={goTo} />
-          </>
-        )}
-
-        {/* PERSON DETAIL */}
-        {screen === 'personDetail' && (() => {
-          const p = people.find(x => x.id === currentPersonId);
-          if (!p) return null;
-          const dims = [
-            { key:'autonomia', label:'Autonomia' },
-            { key:'fiducia', label:'Fiducia' },
-            { key:'pressione', label:'Pressione percepita' },
-            { key:'dialogo', label:'Disponibilità al dialogo' }
-          ];
-          return (
-            <>
-              <TopBar title={p.name} onBack={()=>goTo('people')} />
-              <div style={contentStyle}>
-                <div style={{ display:'flex', gap:14, alignItems:'center', marginBottom:18 }}>
-                  <div style={{ width:60, height:60, borderRadius:'50%', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:800, fontSize:22, color:'#0b0c10' }}>{p.name.charAt(0).toUpperCase()}</div>
-                  <div>
-                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                      <div style={{ display:'inline-flex', background:'#1c1f2b', border:'1px solid rgba(212,175,106,0.3)', borderRadius:999, padding:'6px 12px', fontSize:12.5, fontWeight:600, color:'#d4af6a' }}>{ZODIAC_SYMBOLS[p.sign] || '✦'} {p.sign}</div>
-                      {p.ascendant && (
-                        <div style={{ display:'inline-flex', background:'#1c1f2b', border:'1px solid rgba(139,124,246,0.3)', borderRadius:999, padding:'6px 12px', fontSize:12.5, fontWeight:600, color:'#c9bfff' }}>{ZODIAC_SYMBOLS[p.ascendant] || '✦'} Asc. {p.ascendant}</div>
-                      )}
-                    </div>
-                    <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:6 }}>{p.relation}{p.gender ? ' · ' + p.gender.charAt(0).toUpperCase()+p.gender.slice(1) : ''}</div>
-                  </div>
+                <div className="glass composer">
+                  <label htmlFor="home-input" className="sr-only">{t('home.inputLabel')}</label>
+                  <textarea id="home-input" rows={5} value={homeInput} maxLength={MAX_TEXT}
+                    onChange={e => setHomeInput(e.target.value)} placeholder={t('home.placeholder')} />
+                  <div className="composer-foot" aria-hidden="true">{t('common.chars', { n: homeInput.length, max: MAX_TEXT })}</div>
                 </div>
-                <Card title="Stato relazione">{p.status}</Card>
-                <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'20px 0 10px 0' }}>Relationship DNA</div>
-                <div style={{ background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, padding:16 }}>
-                  {dims.map(d => (
-                    <div key={d.key} style={{ marginBottom:12 }}>
-                      <div style={{ display:'flex', justifyContent:'space-between', fontSize:12.5, color:'#a8a6b3', marginBottom:6, fontWeight:600 }}>
-                        <span>{d.label}</span><span>{p.dna[d.key]}%</span>
-                      </div>
-                      <div style={{ height:8, borderRadius:6, background:'#1c1f2b', overflow:'hidden' }}>
-                        <div style={{ height:'100%', width:`${p.dna[d.key]}%`, borderRadius:6, background:'linear-gradient(90deg, #8b7cf6, #d4af6a)' }}/>
-                      </div>
-                    </div>
+
+                <Label>{t('home.theirSign')}</Label>
+                <p className="hint">{t('home.theirSignHint')}</p>
+                <div className="chips scroll-x" role="group" aria-label={t('home.theirSign')}>
+                  <Chip active={!homeKnownSign} onClick={() => setHomeKnownSign('')}>{t('home.anySign')}</Chip>
+                  {SIGN_IDS.map(id => (
+                    <Chip key={id} active={homeKnownSign === id} onClick={() => setHomeKnownSign(homeKnownSign === id ? '' : id)}>
+                      <SignGlyph id={id} />{signName(lang, id)}
+                    </Chip>
                   ))}
                 </div>
-                <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'20px 0 10px 0' }}>Timeline eventi</div>
-                <div style={{ background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, padding:16 }}>
-                  <div style={{ position:'relative', paddingLeft:18 }}>
-                    <div style={{ position:'absolute', left:4, top:4, bottom:4, width:2, background:'rgba(255,255,255,0.08)' }}/>
-                    {p.timeline.map((t,i) => (
-                      <div key={i} style={{ position:'relative', paddingBottom: i===p.timeline.length-1 ? 0 : 16 }}>
-                        <div style={{ position:'absolute', left:-18, top:3, width:9, height:9, borderRadius:'50%', background:'#8b7cf6', boxShadow:'0 0 0 3px rgba(139,124,246,0.2)' }}/>
-                        <div style={{ fontSize:11.5, color:'#6b6976', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.04em' }}>{t.date}</div>
-                        <div style={{ fontSize:14, color:'#f2f1ee', marginTop:2 }}>{t.text}</div>
-                      </div>
-                    ))}
-                  </div>
+
+                <div className="row" style={{ marginTop: 18 }}>
+                  <Btn variant="secondary" onClick={() => { setHomeInput(t('home.exampleText')); setHomeKnownSign(''); setHomePersonId(null); }}>{t('home.example')}</Btn>
+                  <Btn variant="primary" onClick={analyzeSituation} disabled={analysisLoading}><Icon.spark />{t('home.analyze')}</Btn>
                 </div>
-                <Btn variant="primary" style={{ marginTop:20 }} onClick={newAnalysisForPerson}>Nuova analisi su questa persona</Btn>
-              </div>
-            </>
-          );
-        })()}
 
-        {/* MESSAGGI */}
-        {screen === 'messages' && (
-          <>
-            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>Messaggi</h1></div>
-            <div style={contentStyle}>
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:10 }}>Incolla un messaggio</div>
-              <textarea rows={5} value={msgInput} onChange={e=>setMsgInput(e.target.value)} placeholder="Incolla qui il messaggio da analizzare…"
-                style={{ width:'100%', background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, color:'#f2f1ee', padding:16, fontSize:15, lineHeight:1.45, fontFamily:'inherit', resize:'none' }}/>
-              <Btn variant="primary" style={{ marginTop:12 }} onClick={analyzeMessage} disabled={msgLoading}>Analizza messaggio</Btn>
+                <Label action={people.length > 2 ? <button type="button" className="link" onClick={() => goTo('people')}>{t('home.seeAll')}</button> : null}>
+                  {t('home.recent')}
+                </Label>
+                {people.length === 0
+                  ? <div className="empty">{t('home.emptyRecent')}</div>
+                  : <div className="list">{people.slice(0, 2).map(p => <PersonRow key={p.id} p={p} onClick={() => openPerson(p.id)} />)}</div>}
 
-              {msgLoading && !msgResult && <div style={{marginTop:16}}><Spinner/></div>}
+                <section className="companion" aria-labelledby="companion-title">
+                  <span className="tag">{t('companion.tag')}</span>
+                  <h3 id="companion-title">{t('companion.title')}</h3>
+                  <blockquote>{t('companion.quote')}</blockquote>
+                  <ul>
+                    {t('companion.features').map(f => <li key={f}><span className="star" aria-hidden="true">✦</span>{f}</li>)}
+                  </ul>
+                  <Btn variant="gold" onClick={() => showToast(t('companion.soon'))}>{t('companion.cta')}</Btn>
+                </section>
 
-              {msgResult && (
-                <div style={{ marginTop:20 }}>
-                  <Card title="Come potrebbe essere percepito">{msgResult.perceived}</Card>
-                  <Card title="Rischio di fraintendimento">
-                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                      <div style={{ width:10, height:10, borderRadius:'50%', background: msgResult.risk==='alto' ? '#e0748a' : msgResult.risk==='medio' ? '#d4af6a' : '#4fb88a' }}/>
-                      <div style={{ fontWeight:700 }}>Rischio {msgResult.risk}</div>
+                <footer className="footer">
+                  <p>{t('home.footerLine')}</p>
+                  <button type="button" onClick={() => setSheet({ type: 'privacy' })}>{t('home.footerPrivacy')}</button>
+                </footer>
+              </>
+            )}
+
+            {/* ---------- ANALYSIS ---------- */}
+            {screen === 'analysis' && (
+              <>
+                <div className="kicker" style={{ margin: '4px 0 14px' }}>{t('analysis.kicker')}</div>
+                {analysisLoading && !analysis && <Spinner />}
+                {!analysisLoading && !analysis && (
+                  <div className="empty">
+                    <p>{t('analysis.empty')}</p>
+                    <Btn variant="primary" onClick={() => goTo('home')}>{t('analysis.startNew')}</Btn>
+                  </div>
+                )}
+                {analysis && (
+                  <>
+                    <div className="pills" style={{ marginBottom: 12 }}>
+                      {analysis.mock && <OfflineBadge />}
+                      {analysis.detectedSign && (
+                        <span className="pill" style={{ marginBottom: 12 }}>
+                          <SignGlyph id={analysis.detectedSign} />{t('analysis.detected')}: {signName(lang, analysis.detectedSign)}
+                        </span>
+                      )}
                     </div>
-                  </Card>
-                  <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'8px 0 10px 0' }}>Versione migliorata</div>
-                  <div style={{ background:'#0e2318', border:'1px solid rgba(79,184,138,0.35)', borderRadius:16, padding:16, fontSize:14.5, lineHeight:1.55, color:'#eafff3' }}>
-                    {msgResult.improved}
+                    <Card title={t('analysis.summary')} accent="violet" lead>{analysis.summary}</Card>
+                    <Card title={t('analysis.happening')}>{analysis.whatsHappening}</Card>
+                    <Card title={t('analysis.strategy')} accent="emerald">{analysis.strategy}</Card>
+                    <Card title={t('analysis.avoid')} accent="rose">{analysis.avoid}</Card>
+
+                    <Label>{t('analysis.message')}</Label>
+                    <div className="bubble-wrap"><div className="bubble">{analysis.message}</div></div>
+                    {analysisLoading && <Spinner />}
+                    <div className="row" style={{ marginTop: 14 }}>
+                      <Btn variant="secondary" onClick={() => copyText(analysis.message)}><Icon.copy />{t('common.copy')}</Btn>
+                      <Btn variant="ghost" onClick={improveMessage} disabled={analysisLoading}><Icon.spark />{t('analysis.improve')}</Btn>
+                    </div>
+                    <div className="row" style={{ marginTop: 22 }}>
+                      {(() => {
+                        const ap = people.find(p => p.id === analysisPersonId);
+                        return ap
+                          ? <Btn variant="secondary" onClick={() => openPerson(ap.id)}>{t('analysis.openProfile', { name: personName(ap, t) })}</Btn>
+                          : <Btn variant="secondary" onClick={() => openAddPerson({ sign: analysis.detectedSign }, true)}><Icon.plus />{t('analysis.savePerson')}</Btn>;
+                      })()}
+                      <Btn variant="primary" onClick={() => goTo('coach')}>{t('analysis.goCoach')}</Btn>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* ---------- PEOPLE ---------- */}
+            {screen === 'people' && (
+              <>
+                <div className="page-head">
+                  <h2>{t('people.title')}</h2>
+                  <p>{t('people.subtitle')}</p>
+                </div>
+                <Label>{t('people.gender')}</Label>
+                <div className="chips" role="group" aria-label={t('people.gender')}>
+                  {GENDER_IDS.map(g => (
+                    <Chip key={g} active={genderFilter.includes(g)} onClick={() => toggle(setGenderFilter, g)}>{t(`genders.${g}`)}</Chip>
+                  ))}
+                </div>
+                <Label action={(genderFilter.length > 0 || signFilter.length > 0)
+                  ? <button type="button" className="link" onClick={() => { setGenderFilter([]); setSignFilter([]); }}>{t('people.clearFilters')}</button>
+                  : null}>
+                  {t('people.sign')}
+                </Label>
+                <div className="chips scroll-x" role="group" aria-label={t('people.sign')}>
+                  {SIGN_IDS.map(id => (
+                    <Chip key={id} active={signFilter.includes(id)} onClick={() => toggle(setSignFilter, id)}>
+                      <SignGlyph id={id} />{signName(lang, id)}
+                    </Chip>
+                  ))}
+                </div>
+
+                <div className="list" style={{ marginTop: 20 }}>
+                  {people.length === 0 && <div className="empty">{t('people.empty')}</div>}
+                  {people.length > 0 && filteredPeople.length === 0 && <div className="empty">{t('people.noMatch')}</div>}
+                  {filteredPeople.map(p => <PersonRow key={p.id} p={p} onClick={() => openPerson(p.id)} />)}
+                </div>
+                <button type="button" className="add-row" onClick={() => openAddPerson()}><Icon.plus />{t('people.add')}</button>
+              </>
+            )}
+
+            {/* ---------- PERSON DETAIL ---------- */}
+            {screen === 'personDetail' && !currentPerson && <div className="empty">{t('person.notFound')}</div>}
+            {screen === 'personDetail' && currentPerson && (
+              <PersonDetail p={currentPerson} mySign={profile.sign}
+                onNewAnalysis={() => newAnalysisForPerson(currentPerson)} />
+            )}
+
+            {/* ---------- MESSAGES ---------- */}
+            {screen === 'messages' && (
+              <>
+                <div className="page-head">
+                  <h2>{t('messages.title')}</h2>
+                  <p>{t('messages.subtitle')}</p>
+                </div>
+                <Label>{t('messages.paste')}</Label>
+                <div className="glass composer">
+                  <label htmlFor="msg-input" className="sr-only">{t('messages.paste')}</label>
+                  <textarea id="msg-input" rows={5} value={msgInput} maxLength={MAX_TEXT}
+                    onChange={e => setMsgInput(e.target.value)} placeholder={t('messages.placeholder')} />
+                  <div className="composer-foot" aria-hidden="true">{t('common.chars', { n: msgInput.length, max: MAX_TEXT })}</div>
+                </div>
+                <Btn variant="primary" style={{ marginTop: 14 }} onClick={analyzeMessage} disabled={msgLoading}><Icon.spark />{t('messages.analyze')}</Btn>
+
+                {msgLoading && !msgResult && <Spinner />}
+                {msgResult && (
+                  <div id="msg-result" style={{ marginTop: 22, scrollMarginTop: 12 }}>
+                    {msgResult.mock && <OfflineBadge />}
+                    <Card title={t('messages.perceived')} accent="violet">{msgResult.perceived}</Card>
+                    <Card title={t('messages.risk')}>
+                      <div className={`risk ${msgResult.risk}`}><i aria-hidden="true" />{t(`risk.${msgResult.risk}`)}</div>
+                    </Card>
+                    <Label>{t('messages.improved')}</Label>
+                    <div className="bubble-wrap"><div className="bubble">{msgResult.improved}</div></div>
+                    {msgLoading && <Spinner />}
+                    <Btn variant="secondary" style={{ marginTop: 14 }} onClick={() => copyText(msgResult.improved)}><Icon.copy />{t('common.copy')}</Btn>
+
+                    <Label>{t('messages.changeTone')}</Label>
+                    <div className="grid2">
+                      {TONE_IDS.map(tone => (
+                        <Btn key={tone} variant="secondary" size="sm" onClick={() => changeTone(tone)} disabled={msgLoading}>{t(`tones.${tone}`)}</Btn>
+                      ))}
+                    </div>
                   </div>
-                  {msgLoading && <div style={{marginTop:8}}><Spinner/></div>}
-                  <Btn variant="secondary" style={{ marginTop:10 }} onClick={()=>copyText(msgResult.improved)}>Copia</Btn>
+                )}
+              </>
+            )}
 
-                  <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'20px 0 10px 0' }}>Cambia tono</div>
-                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-                    {['dolce','diretto','breve','sicuro'].map(t => (
-                      <Btn key={t} variant="secondary" style={{ padding:'9px 14px', fontSize:12.5 }} onClick={()=>changeTone(t)} disabled={msgLoading}>
-                        {t==='dolce'?'Più dolce':t==='diretto'?'Più diretto':t==='breve'?'Più breve':'Più sicuro'}
-                      </Btn>
-                    ))}
+            {/* ---------- CHAT ---------- */}
+            {screen === 'chat' && (
+              <>
+                <div className="page-head">
+                  <h2>{t('chat.title')}</h2>
+                  <p>{t('chat.subtitle')}</p>
+                </div>
+                <Label>{t('chat.paste')}</Label>
+                <div className="glass composer">
+                  <label htmlFor="chat-input" className="sr-only">{t('chat.paste')}</label>
+                  <textarea id="chat-input" rows={7} value={chatInput} maxLength={MAX_TEXT}
+                    onChange={e => setChatInput(e.target.value)} placeholder={t('chat.placeholder')} />
+                  <div className="composer-foot" aria-hidden="true">{t('common.chars', { n: chatInput.length, max: MAX_TEXT })}</div>
+                </div>
+                <Btn variant="primary" style={{ marginTop: 14 }} onClick={analyzeChat} disabled={chatLoading}><Icon.spark />{t('chat.analyze')}</Btn>
+
+                {chatLoading && !chatResult && <Spinner />}
+                {chatResult && (
+                  <div id="chat-result" style={{ marginTop: 22, scrollMarginTop: 12 }}>
+                    {chatResult.mock && <OfflineBadge />}
+                    <Card title={t('chat.invest')}>{chatResult.invest}</Card>
+                    <Card title={t('chat.positive')} accent="emerald">{chatResult.positive}</Card>
+                    <Card title={t('chat.distance')} accent="rose">{chatResult.distance}</Card>
+                    <Card title={t('chat.nextstep')} accent="violet" lead>{chatResult.nextstep}</Card>
                   </div>
+                )}
+              </>
+            )}
+
+            {/* ---------- COACH ---------- */}
+            {screen === 'coach' && (
+              <>
+                <div className="page-head">
+                  <h2>{t('coach.title')}</h2>
+                  <p>{t('coach.subtitle')}</p>
                 </div>
-              )}
-            </div>
-            <BottomNav active="messages" onNavigate={goTo} />
-          </>
-        )}
+                <div style={{ height: 16 }} />
+                <Card title={t('coach.stateTitle')} accent="violet">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6, fontWeight: 700 }}>
+                    <span className="status-dot" aria-hidden="true" />{t('coach.waiting')}
+                  </div>
+                  {t('coach.stateText')}
+                </Card>
+                <Card title={t('coach.nextTitle')}>{t('coach.nextText')}</Card>
 
-        {/* CHAT */}
-        {screen === 'chat' && (
-          <>
-            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>Chat</h1></div>
-            <div style={contentStyle}>
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, marginBottom:10 }}>Incolla una conversazione</div>
-              <textarea rows={6} value={chatInput} onChange={e=>setChatInput(e.target.value)} placeholder="Incolla qui la chat da analizzare…"
-                style={{ width:'100%', background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, color:'#f2f1ee', padding:16, fontSize:15, lineHeight:1.45, fontFamily:'inherit', resize:'none' }}/>
-              <Btn variant="primary" style={{ marginTop:12 }} onClick={analyzeChat} disabled={chatLoading}>Analizza chat</Btn>
-
-              {chatLoading && !chatResult && <div style={{marginTop:16}}><Spinner/></div>}
-
-              {chatResult && (
-                <div style={{ marginTop:20 }}>
-                  <Card title="Chi investe di più">{chatResult.invest}</Card>
-                  <Card title="Segnali positivi" accent="emerald">{chatResult.positive}</Card>
-                  <Card title="Segnali di distanza" accent="danger">{chatResult.distance}</Card>
-                  <Card title="Cosa fare ora" accent="violet">{chatResult.nextstep}</Card>
+                <Label>{t('coach.after')}</Label>
+                <div className="grid2" role="group" aria-label={t('coach.after')}>
+                  {FOLLOWUP_IDS.map(f => (
+                    <button type="button" key={f} className="choice" aria-pressed={coachFollowup === f ? 'true' : 'false'}
+                      onClick={() => selectFollowup(f)} disabled={coachLoading}>{t(`followups.${f}`)}</button>
+                  ))}
                 </div>
-              )}
-            </div>
-            <BottomNav active="chat" onNavigate={goTo} />
-          </>
-        )}
 
-        {/* COACH */}
-        {screen === 'coach' && (
-          <>
-            <div style={{ padding:'18px 20px 10px 20px' }}><h1 style={{fontSize:20, margin:0, fontWeight:700}}>✦ Coach</h1></div>
-            <div style={contentStyle}>
-              <Card title="Stato attuale" accent="violet">
-                <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-                  <div style={{ width:9, height:9, borderRadius:'50%', background:'#4fb88a', boxShadow:'0 0 0 4px rgba(79,184,138,0.18)' }}/>
-                  <span style={{ fontWeight:700 }}>In attesa di risposta</span>
-                </div>
-                Hai inviato un messaggio recentemente e sei in una fase di attesa. È normale sentirsi in ansia in questo momento, ma agire con calma ora paga nel tempo.
-              </Card>
-              <Card title="Prossima azione consigliata">
-                Non inviare altri messaggi per almeno qualche ora. Nel frattempo, dedicati a qualcosa che ti distragga.
-              </Card>
+                {coachLoading && <Spinner />}
+                {coachStrategy && !coachLoading && (
+                  <div id="coach-result" style={{ marginTop: 16, scrollMarginTop: 12 }}>
+                    {coachStrategy.mock && <OfflineBadge />}
+                    <Card title={t('coach.updated')} accent="gold" lead>{coachStrategy.text}</Card>
+                  </div>
+                )}
+              </>
+            )}
+          </main>
 
-              <div style={{ fontSize:12.5, textTransform:'uppercase', letterSpacing:'0.06em', color:'#6b6976', fontWeight:700, margin:'20px 0 10px 0' }}>Cosa è successo dopo?</div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-                {[
-                  { key:'risposto', label:'Ha risposto' },
-                  { key:'visualizzato', label:'Ha visualizzato' },
-                  { key:'nonletto', label:'Non ha letto' },
-                  { key:'chiamato', label:'Mi ha chiamato' }
-                ].map(f => (
-                  <button key={f.key} onClick={()=>selectFollowup(f.key)} style={{
-                    background: coachFollowup===f.key ? 'rgba(139,124,246,0.15)' : '#161821',
-                    border: coachFollowup===f.key ? '1px solid #8b7cf6' : '1px solid rgba(255,255,255,0.08)',
-                    borderRadius:16, padding:'14px 10px', color:'#f2f1ee', fontSize:13, fontWeight:700, cursor:'pointer', textAlign:'center'
-                  }}>{f.label}</button>
-                ))}
-              </div>
+          {/* ---------- bottom nav: visible on every screen ---------- */}
+          <nav className="nav" aria-label={t('nav.label')}>
+            {NAV.map(item => {
+              const I = item.icon;
+              return (
+                <button type="button" key={item.key} aria-current={activeTab === item.key ? 'page' : undefined} onClick={() => goTo(item.key)}>
+                  <I />
+                  <span>{t(`nav.${item.key}`)}</span>
+                </button>
+              );
+            })}
+          </nav>
 
-              {coachLoading && <div style={{marginTop:16}}><Spinner/></div>}
-              {coachStrategy && !coachLoading && (
-                <Card title="Strategia aggiornata" accent="gold">{coachStrategy}</Card>
-              )}
-            </div>
-            <BottomNav active="coach" onNavigate={goTo} />
-          </>
-        )}
+          <Toast text={toast} />
 
-        {screen === 'home' && <BottomNav active="home" onNavigate={goTo} />}
-        {screen === 'analysis' && null}
-
-        <Toast text={toast} />
+          {sheet && sheet.type === 'mySign' && (
+            <MySignSheet firstRun={sheet.firstRun} value={profile.sign}
+              onSave={saveMySign} onSkip={skipOnboarding} onClear={clearMySign} onClose={() => setSheet(null)} />
+          )}
+          {sheet && sheet.type === 'person' && (() => {
+            const editing = sheet.personId ? people.find(p => p.id === sheet.personId) : null;
+            return (
+              <PersonFormSheet
+                key={sheet.personId || 'new'}
+                initial={editing || sheet.prefill || {}}
+                displayName={editing ? personName(editing, t) : ''}
+                isEdit={!!editing}
+                onSave={handleSavePerson}
+                onDelete={handleDeletePerson}
+                onClose={() => setSheet(null)} />
+            );
+          })()}
+          {sheet && sheet.type === 'privacy' && (
+            <PrivacySheet onClose={() => setSheet(null)} onClearData={clearLocalData} />
+          )}
+        </div>
       </div>
-    </div>
+    </I18nContext.Provider>
   );
 }
 
-function TopBar({ title, onBack }) {
-  return (
-    <div style={{ padding:'18px 20px 10px 20px', display:'flex', alignItems:'center', gap:12 }}>
-      <button onClick={onBack} style={{ width:34, height:34, borderRadius:'50%', background:'#161821', border:'1px solid rgba(255,255,255,0.08)', color:'#f2f1ee', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, cursor:'pointer' }}>←</button>
-      <h1 style={{ fontSize:20, margin:0, fontWeight:700 }}>{title}</h1>
-    </div>
-  );
-}
-
-function ZodiacRibbon() {
-  return (
-    <div style={{
-      display:'flex', gap:0, justifyContent:'space-between',
-      padding:'10px 2px', borderTop:'1px solid rgba(255,255,255,0.06)', borderBottom:'1px solid rgba(255,255,255,0.06)',
-      opacity:0.55
-    }}>
-      {SIGNS.map(s => (
-        <span key={s} title={s} style={{ fontSize:13, color:'#d4af6a', lineHeight:1 }}>{ZODIAC_SYMBOLS[s]}</span>
-      ))}
-    </div>
-  );
-}
-
-function FilterChip({ label, active, onClick }) {
-  return (
-    <div onClick={onClick} style={{
-      padding:'7px 13px', borderRadius:999, fontSize:12.5, fontWeight:600, cursor:'pointer',
-      background: active ? 'rgba(139,124,246,0.18)' : '#161821',
-      border: active ? '1px solid #8b7cf6' : '1px solid rgba(255,255,255,0.08)',
-      color: active ? '#c9bfff' : '#a8a6b3',
-      transition:'all 0.15s ease'
-    }}>{label}</div>
-  );
-}
+/* ---------- sub components (read i18n from context) ---------- */
 
 function PersonRow({ p, onClick }) {
+  const { t, lang } = useI18n();
+  const name = personName(p, t);
   return (
-    <div onClick={onClick} style={{ display:'flex', alignItems:'center', gap:12, background:'#161821', border:'1px solid rgba(255,255,255,0.08)', borderRadius:16, padding:'12px 14px', cursor:'pointer' }}>
-      <div style={{ width:44, height:44, borderRadius:'50%', background:'linear-gradient(135deg, #8b7cf6, #d4af6a)', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:800, fontSize:16, color:'#0b0c10' }}>{p.name.charAt(0).toUpperCase()}</div>
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:15, fontWeight:700 }}>{p.name}</div>
-        <div style={{ fontSize:12.5, color:'#a8a6b3', marginTop:2 }}>{ZODIAC_SYMBOLS[p.sign] || ''} {p.sign} · {p.relation}</div>
+    <button type="button" className="person-row" onClick={onClick} aria-label={t('people.open', { name })}>
+      <Avatar name={name} sign={p.sign} />
+      <div className="meta">
+        <div className="name">{name}</div>
+        <div className="sub">
+          {p.sign ? signName(lang, p.sign) : t('common.unknownSign')} · {t(`relations.${p.relation}`)}
+        </div>
       </div>
-      <div style={{ color:'#6b6976', fontSize:18 }}>›</div>
-    </div>
+      <span className="chev" aria-hidden="true">›</span>
+    </button>
+  );
+}
+
+function PersonDetail({ p, mySign, onNewAnalysis }) {
+  const { t, lang } = useI18n();
+  const name = personName(p, t);
+  const events = [...p.timeline].sort((a, b) => new Date(b.date) - new Date(a.date));
+  return (
+    <>
+      <div className="profile-hero">
+        <Avatar name={name} sign={p.sign} large />
+        <div style={{ minWidth: 0 }}>
+          <h2>{name}</h2>
+          <div className="pills">
+            <span className="pill"><SignGlyph id={p.sign} />{p.sign ? signName(lang, p.sign) : t('common.unknownSign')}</span>
+            {p.ascendant && <span className="pill violet"><SignGlyph id={p.ascendant} />{t('person.asc')} {signName(lang, p.ascendant)}</span>}
+          </div>
+          <div className="muted" style={{ marginTop: 8 }}>{t(`relations.${p.relation}`)} · {t(`genders.${p.gender}`)}</div>
+        </div>
+      </div>
+
+      {mySign && p.sign && (
+        <div className="pairing" aria-label={t('person.pairing')}>
+          <div className="side"><div className="g" aria-hidden="true">{SIGN_SYMBOLS[mySign]}</div><div className="n">{t('person.you')}</div></div>
+          <div className="x" aria-hidden="true">&amp;</div>
+          <div className="side"><div className="g" aria-hidden="true">{SIGN_SYMBOLS[p.sign]}</div><div className="n">{name}</div></div>
+        </div>
+      )}
+
+      <Card title={t('person.status')} accent="gold">{personStatus(p, t)}</Card>
+
+      <Label>{t('person.dna')}</Label>
+      <div className="glass dna">
+        {DNA_IDS.map(k => (
+          <div className="dna-row" key={k}>
+            <div className="dna-head"><span>{t(`dna.${k}`)}</span><b>{p.dna[k]}%</b></div>
+            <div className="bar" role="meter" aria-label={t(`dna.${k}`)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={p.dna[k]}>
+              <i style={{ width: `${p.dna[k]}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <Label>{t('person.timeline')}</Label>
+      <div className="glass timeline">
+        {events.length === 0 ? <div className="muted">{t('person.emptyTimeline')}</div> : (
+          <ol className="tl" style={{ listStyle: 'none', margin: 0 }}>
+            {events.map(e => (
+              <li key={e.id || e.date} className={`tl-item ${e.kind === 'analysis' ? 'analysis' : ''}`}>
+                <div className="tl-date">
+                  <time dateTime={e.date}>{relTime(e.date, lang)}</time>
+                  {e.kind === 'analysis' && <span className="tl-tag">✦ {t('person.analysisEvent')}</span>}
+                </div>
+                <div className="tl-text">{eventText(e, t)}</div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+
+      <Btn variant="primary" style={{ marginTop: 22 }} onClick={onNewAnalysis}><Icon.spark />{t('person.newAnalysis')}</Btn>
+    </>
   );
 }

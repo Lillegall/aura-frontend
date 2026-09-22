@@ -1,35 +1,49 @@
-# Aura Frontend
+# Aura — Frontend
 
-L'app Aura come sito web vero — non più dentro un artifact, ma con un
-indirizzo pubblico raggiungibile da qualsiasi browser, incluso Safari
-su iPhone.
+Coach di comunicazione per le relazioni: racconti la situazione, Aura usa il segno zodiacale
+come lente interpretativa e restituisce analisi + messaggio pronto da inviare.
+Vite + React 18, nessuna libreria UI. Interfaccia in italiano e inglese.
 
-Si collega al backend già pubblicato su:
-https://aura-backend-icox.onrender.com
+## Avvio in locale
 
-## Come pubblicarlo su Render (stessa procedura del backend)
+```bash
+npm install
+cp .env.example .env      # opzionale
+npm run dev               # http://localhost:5173
+npm run build && npm run preview   # build di produzione su http://localhost:4173
+```
 
-1. Carica tutti questi file su un nuovo repository GitHub,
-   ad esempio chiamato `aura-frontend`
+## Variabili d'ambiente
 
-2. Su Render (dashboard.render.com):
-   - Clicca "New" → questa volta scegli **"Static Site"**
-     (non "Web Service" come per il backend)
-   - Collega il repository `aura-frontend`
-   - Build Command: `npm install && npm run build`
-   - Publish Directory: `dist`
-   - Clicca "Create Static Site"
+| Variabile | Default | Note |
+|---|---|---|
+| `VITE_BACKEND_URL` | `https://aura-backend-icox.onrender.com` | URL del backend, senza slash finale. Viene letta **al momento della build**. |
 
-3. Dopo 2-3 minuti avrai un indirizzo pubblico tipo:
-   `https://aura-frontend-xxxx.onrender.com`
+## Struttura
 
-4. Apri quell'indirizzo da Safari su iPhone — è la vera app,
-   accessibile da chiunque abbia il link.
+- `src/AuraApp.jsx` — stato dell'app e schermate
+- `src/i18n.js` — dizionari `it` / `en` (tutti i testi visibili), segni, helper
+- `src/api.js` — client del backend (contratto v2: `lang` su ogni chiamata, timeout 30 s, warm-up `/api/health`)
+- `src/data.js` — persone di esempio, salvataggio in localStorage, risposte di riserva offline
+- `src/ui.jsx`, `src/sheets.jsx` — componenti e pannelli (segno, persona, privacy)
+- `src/styles.css` — design system
+- `public/` — favicon e manifest PWA
 
-## Nota tecnica
+Lingua: rilevata da `navigator.language` (it* → italiano, altrimenti inglese),
+selettore IT/EN in alto, scelta salvata nel browser.
+Persone, timeline e il tuo segno restano solo sul dispositivo (localStorage).
 
-A differenza del backend (che è un "Web Service" perché deve girare
-un server sempre attivo), il frontend è un "Static Site": Vite lo
-trasforma in file HTML/CSS/JS pronti, che Render serve direttamente
-senza bisogno di un server Node.js dedicato — più veloce e gratuito
-senza limiti di "spin down".
+## Deploy su Render
+
+Il file `render.yaml` definisce uno Static Site:
+
+- Build command: `npm install && npm run build`
+- Publish directory: `dist`
+- Rewrite `/*` → `/index.html` (SPA)
+- Env var `VITE_BACKEND_URL`
+
+Da dashboard: **New → Blueprint** sul repository, oppure **New → Static Site** con gli stessi
+valori. Se cambi `VITE_BACKEND_URL` serve un nuovo deploy (è incorporata nella build).
+
+Il backend sul piano gratuito di Render si addormenta: l'app lo "sveglia" all'apertura e,
+se non risponde in tempo, mostra una risposta di riserva con il badge "Modalità offline".
