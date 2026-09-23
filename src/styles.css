@@ -286,7 +286,7 @@ button { cursor: pointer; }
   color: var(--accent-text, var(--dim));
   margin: 0 0 9px;
 }
-.card-body { font-size: 15px; line-height: 1.6; color: var(--text); }
+.card-body { font-size: 15px; line-height: 1.6; color: var(--text); white-space: pre-line; }
 .card.violet { --accent: var(--violet); --accent-text: var(--violet-soft); background: linear-gradient(160deg, rgba(139,124,246,0.2), rgba(24,21,38,0.72) 60%); border-color: rgba(139,124,246,0.3); }
 .card.gold { --accent: var(--gold); --accent-text: var(--gold); background: linear-gradient(160deg, rgba(212,175,106,0.16), rgba(24,21,38,0.72) 60%); border-color: rgba(212,175,106,0.3); }
 .card.emerald { --accent: var(--emerald); --accent-text: #86dcb4; }

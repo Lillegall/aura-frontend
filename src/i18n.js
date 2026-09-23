@@ -26,6 +26,12 @@ export const RELATION_IDS = ['partner', 'crush', 'ex', 'friend', 'family', 'coll
 export const DNA_IDS = ['autonomy', 'trust', 'pressure', 'dialogue'];
 export const TONE_IDS = ['sweet', 'direct', 'short', 'confident'];
 export const FOLLOWUP_IDS = ['replied', 'seen', 'unread', 'called'];
+export const SITUATION_IDS = [
+  'fight', 'jealousy_control', 'silence_ghosting', 'coldness_distance', 'ex_back', 'breakup', 'betrayal', 'apology',
+  'first_move', 'new_relationship', 'commitment_future', 'cohabitation', 'money', 'family_boundaries', 'parent_child',
+  'friendship_rift', 'work_conflict', 'asking_need', 'hard_feedback', 'support_hard_time', 'neglect_attention',
+  'affection_closeness', 'disagreement_decision', 'reconnect'
+];
 export const RISK_IDS = ['low', 'medium', 'high'];
 
 const it = {
@@ -134,7 +140,12 @@ const it = {
     detected: 'Segno letto',
     empty: 'Nessuna analisi ancora. Racconta una situazione dalla Home.',
     startNew: 'Nuova analisi',
-    addedTimeline: 'Aggiunta alla timeline di {name}'
+    addedTimeline: 'Aggiunta alla timeline di {name}',
+    anotherVersion: 'Un’altra versione',
+    anotherVersionLabel: 'Genera un’altra versione di questa lettura',
+    versionReady: 'Ecco un’altra versione',
+    pairingTitle: 'Tu × {sign}',
+    situationLabel: 'Situazione'
   },
   people: {
     title: 'Persone',
@@ -352,6 +363,14 @@ const it = {
       ]
     }
   },
+  situations: {
+    fight: 'Litigio', jealousy_control: 'Gelosia e controllo', silence_ghosting: 'Silenzio / ghosting', coldness_distance: 'Freddezza e distanza',
+    ex_back: 'Ex', breakup: 'Rottura', betrayal: 'Fiducia tradita', apology: 'Chiedere scusa',
+    first_move: 'Primo passo', new_relationship: 'Frequentazione iniziale', commitment_future: 'Impegno e futuro', cohabitation: 'Convivenza',
+    money: 'Soldi', family_boundaries: 'Famiglia e confini', parent_child: 'Genitori e figli', friendship_rift: 'Amicizia incrinata',
+    work_conflict: 'Lavoro', asking_need: 'Chiedere ciò che serve', hard_feedback: 'Dire una cosa scomoda', support_hard_time: 'Momento difficile',
+    neglect_attention: 'Sentirsi trascurati', affection_closeness: 'Affetto e vicinanza', disagreement_decision: 'Decisione da prendere', reconnect: 'Riavvicinarsi'
+  },
   signs: {
     aries: 'Ariete', taurus: 'Toro', gemini: 'Gemelli', cancer: 'Cancro',
     leo: 'Leone', virgo: 'Vergine', libra: 'Bilancia', scorpio: 'Scorpione',
@@ -465,7 +484,12 @@ const en = {
     detected: 'Sign read',
     empty: 'No analysis yet. Describe a situation from Home.',
     startNew: 'New analysis',
-    addedTimeline: 'Added to {name}’s timeline'
+    addedTimeline: 'Added to {name}’s timeline',
+    anotherVersion: 'Another version',
+    anotherVersionLabel: 'Generate another version of this reading',
+    versionReady: 'Here’s another version',
+    pairingTitle: 'You × {sign}',
+    situationLabel: 'Situation'
   },
   people: {
     title: 'People',
@@ -682,6 +706,14 @@ const en = {
         'Talked through a family decision, settled calmly.'
       ]
     }
+  },
+  situations: {
+    fight: 'Argument', jealousy_control: 'Jealousy & control', silence_ghosting: 'Silence / ghosting', coldness_distance: 'Coldness & distance',
+    ex_back: 'Ex', breakup: 'Breakup', betrayal: 'Broken trust', apology: 'Apologising',
+    first_move: 'First move', new_relationship: 'Early dating', commitment_future: 'Commitment & future', cohabitation: 'Living together',
+    money: 'Money', family_boundaries: 'Family & boundaries', parent_child: 'Parents & kids', friendship_rift: 'Strained friendship',
+    work_conflict: 'Work', asking_need: 'Asking for what you need', hard_feedback: 'Saying something hard', support_hard_time: 'Hard time',
+    neglect_attention: 'Feeling neglected', affection_closeness: 'Affection & closeness', disagreement_decision: 'A decision to make', reconnect: 'Reconnecting'
   },
   signs: {
     aries: 'Aries', taurus: 'Taurus', gemini: 'Gemini', cancer: 'Cancer',

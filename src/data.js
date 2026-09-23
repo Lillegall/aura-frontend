@@ -94,8 +94,34 @@ export function eventText(e, t) {
   return '';
 }
 
-/* ---------- localized mock fallbacks ---------- */
-export function mockSituation(text, knownSign, t, lang) {
+/* ---------- offline engine (lazy chunk, see src/engine) ---------- */
+let enginePromise = null;
+function loadEngine() {
+  if (!enginePromise) {
+    enginePromise = Promise.all([import('./engine/engine.mjs'), import('./engine/loader.js')])
+      .then(([engine, loader]) => ({ engine, loadSign: loader.loadSign }))
+      .catch(() => { enginePromise = null; return null; });
+  }
+  return enginePromise;
+}
+/* Warm the engine + neutral bank so an offline fallback is instant. */
+export function preloadEngine() {
+  return loadEngine().then(e => (e ? e.engine.getBank('none', e.loadSign) : null)).catch(() => null);
+}
+
+/* ---------- localized fallbacks: engine first, static strings as last resort ---------- */
+export async function mockSituation(text, knownSign, t, lang, userSign, seed) {
+  try {
+    const e = await loadEngine();
+    const r = e && await e.engine.analyzeSituation({ text, lang, knownSign, userSign, seed, loadSign: e.loadSign });
+    if (r && r.complete) {
+      const { summary, whatsHappening, strategy, avoid, message, detectedSign, situation, relation, pairing } = r;
+      return { summary, whatsHappening, strategy, avoid, message, detectedSign, situation, relation, pairing, mock: true };
+    }
+  } catch { /* fall through */ }
+  return legacySituation(text, knownSign, t, lang);
+}
+function legacySituation(text, knownSign, t, lang) {
   const id = toSignId(knownSign) || findSignInText(text) || '';
   const m = t('mock.situation');
   return {
@@ -117,7 +143,12 @@ export function mockChat(t) {
   const m = t('mock.chat');
   return { invest: m.invest, positive: m.positive, distance: m.distance, nextstep: m.nextstep, mock: true };
 }
-export function mockCoach(kind, t) {
+export async function mockCoach(kind, t, lang, sign, seed, context) {
+  try {
+    const e = await loadEngine();
+    const r = e && await e.engine.coachStrategy({ followupType: kind, lang, sign, seed, text: context || '', loadSign: e.loadSign });
+    if (r && r.strategy) return { strategy: r.strategy, mock: true };
+  } catch { /* fall through */ }
   return { strategy: t(`mock.coach.${kind}`), mock: true };
 }
 

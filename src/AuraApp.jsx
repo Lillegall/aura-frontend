@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   I18nContext, useI18n, translate, detectLang, LANGS, LANG_KEY, SIGN_IDS, SIGN_SYMBOLS, GENDER_IDS,
-  DNA_IDS, TONE_IDS, FOLLOWUP_IDS, signName, toSignId, toRiskId, relTime
+  DNA_IDS, TONE_IDS, FOLLOWUP_IDS, SITUATION_IDS, signName, toSignId, toRiskId, relTime
 } from './i18n.js';
 import { storage, KEYS } from './storage.js';
 import { post, warmUp, ApiError, MAX_TEXT } from './api.js';
 import {
   loadPeople, savePeople, loadProfile, saveProfile, newPersonId,
-  personName, personStatus, eventText, mockSituation, mockMessage, mockChat, mockCoach
+  personName, personStatus, eventText, mockSituation, mockMessage, mockChat, mockCoach, preloadEngine
 } from './data.js';
 import {
   Icon, Btn, Card, Label, Spinner, OfflineBadge, LangBanner, Toast, Chip, SignGlyph, Avatar, ZodiacHalo
@@ -56,7 +56,12 @@ export default function AuraApp() {
   useEffect(() => { saveProfile(profile); }, [profile]);
 
   /* Render free tier cold start: wake the backend right away */
-  useEffect(() => { warmUp(); }, []);
+  useEffect(() => {
+    warmUp();
+    /* warm the offline engine once the page is idle, so it doesn't compete with first paint */
+    const idle = window.requestIdleCallback || (cb => setTimeout(cb, 2500));
+    idle(() => preloadEngine());
+  }, []);
 
   /* ---------- navigation / ui ---------- */
   const [screen, setScreen] = useState('home');
@@ -99,6 +104,7 @@ export default function AuraApp() {
   const [coachFollowup, setCoachFollowup] = useState(null);
   const [coachStrategy, setCoachStrategy] = useState(null);
   const [coachLoading, setCoachLoading] = useState(false);
+  const coachSeed = useRef(0);
 
   const homePerson = people.find(p => p.id === homePersonId) || null;
 
@@ -120,7 +126,7 @@ export default function AuraApp() {
       if (e instanceof ApiError) {
         if (e.recoverable && fallback) {
           showToast(e.kind === 'timeout' ? 'errors.timeout' : 'errors.network');
-          return { data: fallback(), source: 'device' };
+          return { data: await fallback(), source: 'device' };
         }
         if (e.kind === 'rate_limited') showToast('errors.rateLimited');
         else if (e.kind === 'bad_request') showToast('errors.badRequest');
@@ -157,7 +163,7 @@ export default function AuraApp() {
   function analyzeSituation() {
     const text = homeInput.trim();
     if (!text) { showToast('home.emptyInput'); return; }
-    runSituation({ text, knownSign: homeKnownSign || '', personId: homePerson ? homePerson.id : null }, false);
+    runSituation({ text, knownSign: homeKnownSign || '', personId: homePerson ? homePerson.id : null, seed: 0 }, false);
   }
 
   async function runSituation(req, regen) {
@@ -166,8 +172,11 @@ export default function AuraApp() {
     nextReq('improve');
     if (!regen) { setAnalysis(null); setScreen('analysis'); }
     setAnalysisLoading(true);
-    const res = await request('/api/analyze-situation', { text: req.text, knownSign: req.knownSign || undefined }, l,
-      () => mockSituation(req.text, req.knownSign, (k, v) => translate(l, k, v), l));
+    const userSign = profile.sign || '';
+    const seed = req.seed || 0;
+    const res = await request('/api/analyze-situation',
+      { text: req.text, knownSign: req.knownSign || undefined, userSign: userSign || undefined, seed }, l,
+      () => mockSituation(req.text, req.knownSign, (k, v) => translate(l, k, v), l, userSign, seed));
     if (!isCurrent('situation', id)) return;
     setAnalysisLoading(false);
     if (!res) {
@@ -180,16 +189,25 @@ export default function AuraApp() {
       summary: str(d.summary), whatsHappening: str(d.whatsHappening), strategy: str(d.strategy),
       avoid: str(d.avoid), message, originalMessage: message,
       detectedSign: toSignId(d.detectedSign) || req.knownSign || '',
+      pairing: str(d.pairing), situation: str(d.situation),
       offline: offlineKind(res), lang: l, req
     };
     setAnalysis(result);
-    if (regen) return;
+    if (regen) return true;
     setAnalysisPersonId(req.personId);
     const person = req.personId && people.find(p => p.id === req.personId);
     if (person) {
       addTimelineEvent(person.id, { id: newPersonId(), date: new Date().toISOString(), kind: 'analysis', text: result.summary });
       showToast('analysis.addedTimeline', { name: nameVar(person) });
     }
+    return true;
+  }
+
+  /* Same situation, next seed: another combination offline, a fresh answer with AI */
+  function anotherVersion() {
+    if (!analysis || analysisLoading) return;
+    runSituation({ ...analysis.req, seed: (analysis.req.seed || 0) + 1 }, true)
+      .then(ok => { if (ok) showToast('analysis.versionReady'); });
   }
 
   /* Always improves the ORIGINAL suggested message, never an already-improved one */
@@ -367,9 +385,11 @@ export default function AuraApp() {
     const id = nextReq('coach');
     setCoachLoading(true);
     const extra = (analysis && analysis.summary) || homeInput.trim();
-    const knownSign = (analysis && analysis.req.knownSign) || homeKnownSign;
-    const res = await request('/api/coach-strategy', { followupType: kind, context: contextLine(l, knownSign, extra) }, l,
-      () => mockCoach(kind, (k, v) => translate(l, k, v)));
+    const knownSign = (analysis && (analysis.req.knownSign || analysis.detectedSign)) || homeKnownSign;
+    const context = contextLine(l, knownSign, extra);
+    const seed = coachSeed.current++;
+    const res = await request('/api/coach-strategy', { followupType: kind, context, sign: knownSign || undefined, seed }, l,
+      () => mockCoach(kind, (k, v) => translate(l, k, v), l, knownSign, seed, context));
     if (!isCurrent('coach', id)) return;
     setCoachLoading(false);
     if (res) { setCoachStrategy({ text: str(res.data.strategy), offline: offlineKind(res), lang: l, kind }); reveal('coach-result'); }
@@ -543,11 +563,21 @@ export default function AuraApp() {
                           <SignGlyph id={analysis.detectedSign} />{t('analysis.detected')}: {signName(lang, analysis.detectedSign)}
                         </span>
                       )}
+                      {SITUATION_IDS.includes(analysis.situation) && (
+                        <span className="pill" aria-label={`${t('analysis.situationLabel')}: ${t(`situations.${analysis.situation}`)}`}>
+                          {t(`situations.${analysis.situation}`)}
+                        </span>
+                      )}
                     </div>
                     <Card title={t('analysis.summary')} accent="violet" lead>{analysis.summary}</Card>
                     <Card title={t('analysis.happening')}>{analysis.whatsHappening}</Card>
                     <Card title={t('analysis.strategy')} accent="emerald">{analysis.strategy}</Card>
                     <Card title={t('analysis.avoid')} accent="rose">{analysis.avoid}</Card>
+                    {analysis.pairing && analysis.detectedSign && (
+                      <Card title={t('analysis.pairingTitle', { sign: signName(lang, analysis.detectedSign) })} accent="gold">
+                        {analysis.pairing}
+                      </Card>
+                    )}
 
                     <Label>{t('analysis.message')}</Label>
                     <div className="bubble-wrap"><div className="bubble">{analysis.message}</div></div>
@@ -559,6 +589,10 @@ export default function AuraApp() {
                     {analysis.message !== analysis.originalMessage && (
                       <Btn variant="secondary" size="sm" style={{ marginTop: 10 }} onClick={resetMessage} disabled={analysisLoading}>{t('common.reset')}</Btn>
                     )}
+                    <Btn variant="ghost" size="sm" style={{ marginTop: 10 }} onClick={anotherVersion} disabled={analysisLoading}
+                      aria-label={t('analysis.anotherVersionLabel')}>
+                      <Icon.spark />{t('analysis.anotherVersion')}
+                    </Btn>
                     <div className="row" style={{ marginTop: 22 }}>
                       {(() => {
                         const ap = people.find(p => p.id === analysisPersonId);
